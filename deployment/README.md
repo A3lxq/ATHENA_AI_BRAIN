@@ -96,9 +96,10 @@ copy-paste snippet:
   paths into the sandboxed process), so anything the sandboxed process needs
   must be passed explicitly via `--setenv` inside the script, not assumed to
   arrive from outside.
-- This project's own MCP server (`athena.mcp_server`) does not exist yet
-  (see "Open items"), so this wiring cannot actually be completed today —
-  document it now, use it once Phase 6 delivers the module.
+- This project's own MCP server (`athena.mcp_server`, `python -m
+  athena.mcp_server`) now exists (Phase 6, docs/design/mcp-server.md) --
+  the venv/install-path placeholder in "Open items" below is the only
+  remaining blocker before this wiring can actually be enabled.
 
 ## Required environment variables
 
@@ -110,11 +111,13 @@ copy-paste snippet:
 No other environment variables are read by either script. Anything else the
 MCP server process needs at runtime must be added explicitly as a
 `--setenv` line in the bubblewrap script (it will not be inherited — see
-above) once that process actually exists.
+above).
 
 ## Open items — placeholders that must be updated before real use
 
-**Neither artifact is deployment-ready yet.** Both contain deliberate
+**Neither artifact is deployment-ready yet**, though both entry points they
+launch now exist as real, tested code (`athena.worker` since Phase 2,
+`athena.mcp_server` since Phase 6). What's left is purely deployment
 placeholders, clearly marked with comments in the files themselves:
 
 1. **Venv/install path.** `athena-huey-worker.service`'s `ExecStart=` uses
@@ -122,11 +125,7 @@ placeholders, clearly marked with comments in the files themselves:
    variable uses `${HOME}/athena/.venv` — both are placeholders. This
    project's actual virtualenv/install location has not been decided as of
    this writing. Update both once it is.
-2. **`athena.worker` (Huey worker entry point)** — not built yet; a later
-   Phase 2/3 component.
-3. **`athena.mcp_server` (MCP server entry point)** — not built yet; a
-   later Phase 6 component.
-4. **Vault path placeholder.** The systemd unit's `ReadWritePaths=` uses
+2. **Vault path placeholder.** The systemd unit's `ReadWritePaths=` uses
    `%h/ObsidianVault` as a stand-in; confirm this against wherever the vault
    actually ends up living (per CLAUDE.md rule 13, the vault stays separate
    from ATHENA AI-BRAIN's own repo/install location) before enabling the unit.

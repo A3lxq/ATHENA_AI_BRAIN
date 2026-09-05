@@ -278,3 +278,37 @@ async def test_get_lineage_on_a_note_with_no_history_is_empty(conn: aiosqlite.Co
 
     assert lineage.ancestors == []
     assert lineage.descendants == []
+
+
+async def test_get_activities_for_note_returns_only_that_notes_rows(
+    conn: aiosqlite.Connection,
+) -> None:
+    note_a = await _make_note_named(conn, "a.md")
+    note_b = await _make_note_named(conn, "b.md")
+    await provenance.insert_activity(
+        conn, note_id=note_a, activity_type="ingested", provider="anthropic", model=None,
+        human_edited=False, occurred_at="t0", recorded_at="t0",
+    )
+    await provenance.insert_activity(
+        conn, note_id=note_a, activity_type="human_edit", provider="human", model=None,
+        human_edited=True, occurred_at="t1", recorded_at="t1",
+    )
+    await provenance.insert_activity(
+        conn, note_id=note_b, activity_type="ingested", provider="anthropic", model=None,
+        human_edited=False, occurred_at="t0", recorded_at="t0",
+    )
+
+    activities = await provenance.get_activities_for_note(conn, note_a)
+
+    assert [a.activity_type for a in activities] == ["ingested", "human_edit"]
+    assert all(a.note_id == note_a for a in activities)
+
+
+async def test_get_activities_for_note_returns_empty_for_a_note_with_none(
+    conn: aiosqlite.Connection,
+) -> None:
+    note_id = await _make_note_named(conn, "lonely.md")
+
+    activities = await provenance.get_activities_for_note(conn, note_id)
+
+    assert activities == []

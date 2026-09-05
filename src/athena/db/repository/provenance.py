@@ -136,3 +136,46 @@ async def get_lineage(conn: aiosqlite.Connection, note_id: int) -> LineageGraph:
     ]
 
     return LineageGraph(note_id=note_id, ancestors=ancestors, descendants=descendants)
+
+
+@dataclass(frozen=True)
+class ProvenanceRow:
+    id: int
+    note_id: int
+    activity_type: str
+    provider: str | None
+    model: str | None
+    human_edited: bool
+    supersedes_note_id: int | None
+    occurred_at: str
+
+
+async def get_activities_for_note(
+    conn: aiosqlite.Connection, note_id: int
+) -> list[ProvenanceRow]:
+    """A note's own PROV activity history (docs/design/mcp-server.md §2.1's
+    `note_provenance` tool) -- what produced it, human-edited, and any
+    supersession this specific activity recorded. Distinct from
+    `get_lineage`, which answers the broader supersession-graph question
+    across potentially many activities/notes.
+    """
+    cursor = await conn.execute(
+        "SELECT id, note_id, activity_type, provider, model, human_edited, "
+        "supersedes_note_id, occurred_at FROM provenance WHERE note_id = ? "
+        "ORDER BY occurred_at",
+        (note_id,),
+    )
+    rows = await cursor.fetchall()
+    return [
+        ProvenanceRow(
+            id=row[0],
+            note_id=row[1],
+            activity_type=row[2],
+            provider=row[3],
+            model=row[4],
+            human_edited=bool(row[5]),
+            supersedes_note_id=row[6],
+            occurred_at=row[7],
+        )
+        for row in rows
+    ]

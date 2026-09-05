@@ -41,14 +41,10 @@ MODEL_CACHE="${HOME}/.cache/huggingface"
 # install-time step). Update VENV to the real, verified path once it exists.
 VENV="${HOME}/athena/.venv"
 
-# --- PLACEHOLDER: entry point does not exist yet ---
-# `athena.mcp_server` is a Phase 6 component per the project roadmap
-# (docs/ARCHITECTURE.md / roadmap) and has not been built. This script is a
-# forward reference to that future module, kept here (rather than deferred
-# entirely) so the sandboxing shape is designed and reviewed now, alongside
-# the rest of this hardening work, per CLAUDE.md's "design before coding"
-# and "every feature gets a design document before implementation" rules.
-# Do not use this script until both VENV above and athena.mcp_server exist.
+# `athena.mcp_server` (docs/design/mcp-server.md, Phase 6) now exists as a
+# real, tested `python -m athena.mcp_server` entry point. The VENV
+# placeholder above is the only remaining blocker before this script is
+# actually usable end-to-end.
 
 exec bwrap \
   --clearenv \

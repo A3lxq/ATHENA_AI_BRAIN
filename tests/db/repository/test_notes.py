@@ -265,3 +265,19 @@ async def test_list_stale_candidates_filters_by_status_and_cutoff(
     assert active_recent not in [row.id for row in stale_candidates]
     assert draft_old not in [row.id for row in stale_candidates]
     assert archived_old not in [row.id for row in stale_candidates]
+
+
+async def test_count_active_excludes_soft_deleted_notes(conn: aiosqlite.Connection) -> None:
+    await notes.insert(
+        conn, path="a.md", title="A", origin="human", provider=None,
+        folder=None, content_hash="h1", created_at="2026-09-04T00:00:00+00:00",
+    )
+    deleted_id = await notes.insert(
+        conn, path="b.md", title="B", origin="human", provider=None,
+        folder=None, content_hash="h2", created_at="2026-09-04T00:00:00+00:00",
+    )
+    await notes.soft_delete(conn, deleted_id, deleted_at="2026-09-04T01:00:00+00:00")
+
+    count = await notes.count_active(conn)
+
+    assert count == 1

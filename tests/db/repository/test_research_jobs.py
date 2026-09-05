@@ -143,3 +143,56 @@ async def test_mark_finished_rejects_non_terminal_status(conn: aiosqlite.Connect
         await research_jobs.mark_finished(
             conn, job_id, status="queued", finished_at="2026-08-28T00:01:00+00:00"
         )
+
+
+async def test_get_by_id_returns_the_row(conn: aiosqlite.Connection) -> None:
+    job_id = await research_jobs.insert(
+        conn, huey_task_id="huey-task-7", job_type="reindex_start",
+        created_at="2026-08-28T00:00:00+00:00",
+    )
+
+    row = await research_jobs.get_by_id(conn, job_id)
+
+    assert row is not None
+    assert row.id == job_id
+    assert row.huey_task_id == "huey-task-7"
+    assert row.job_type == "reindex_start"
+    assert row.status == "queued"
+
+
+async def test_get_by_id_returns_none_for_unknown_id(conn: aiosqlite.Connection) -> None:
+    row = await research_jobs.get_by_id(conn, 999_999)
+
+    assert row is None
+
+
+async def test_mark_cancelled_sets_status_and_finished_at(conn: aiosqlite.Connection) -> None:
+    job_id = await research_jobs.insert(
+        conn, huey_task_id="huey-task-8", job_type="duplicates_scan",
+        created_at="2026-08-28T00:00:00+00:00",
+    )
+
+    await research_jobs.mark_cancelled(conn, job_id, cancelled_at="2026-08-28T00:01:00+00:00")
+
+    row = await research_jobs.get_by_id(conn, job_id)
+    assert row is not None
+    assert row.status == "cancelled"
+    assert row.finished_at == "2026-08-28T00:01:00+00:00"
+
+
+async def test_count_by_status_groups_correctly(conn: aiosqlite.Connection) -> None:
+    job_a = await research_jobs.insert(
+        conn, huey_task_id="huey-task-9", job_type="ingestion",
+        created_at="2026-08-28T00:00:00+00:00",
+    )
+    await research_jobs.insert(
+        conn, huey_task_id="huey-task-10", job_type="ingestion",
+        created_at="2026-08-28T00:00:00+00:00",
+    )
+    await research_jobs.mark_finished(
+        conn, job_a, status="succeeded", finished_at="2026-08-28T00:01:00+00:00"
+    )
+
+    counts = await research_jobs.count_by_status(conn)
+
+    assert counts == {"queued": 1, "succeeded": 1}

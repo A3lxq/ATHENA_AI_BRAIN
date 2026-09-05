@@ -61,6 +61,8 @@ __all__ = [
     "index_note_task",
     "reconcile_vault_task",
     "stale_sweep_task",
+    "duplicates_scan_task",
+    "reindex_task",
 ]
 
 logger = logging.getLogger(__name__)
@@ -419,6 +421,65 @@ def reconcile_vault_task() -> None:  # pragma: no cover -- exercised via run_rec
 )
 def stale_sweep_task() -> None:  # pragma: no cover -- exercised via run_stale_sweep in tests
     run_stale_sweep(_config)
+
+
+@huey.task(retries=3, retry_delay=10)  # type: ignore[untyped-decorator]  # huey ships no py.typed
+def duplicates_scan_task(correlation_id: str) -> None:
+    """MCP `duplicates_scan` tool's task-backed counterpart (design doc
+    §2.1/§2.3) -- a whole-vault scan (`note_ids=None`), matching `run_
+    duplicates_scan`'s own best-effort Qdrant reasoning: `scan_for_
+    duplicates`'s semantic signal already degrades gracefully if Qdrant is
+    unreachable, so this never needs to fail the whole job over it. Unlike
+    `ingest_note_task`, this task does not touch `research_jobs` itself --
+    that bookkeeping (insert/mark_started/mark_finished) is the MCP tool
+    layer's job when it *enqueues* this task, not this task's own job when
+    it *runs*."""
+
+    async def _run() -> list[DuplicateCandidate]:
+        vault_root = _require_vault_root(_config)
+        qdrant_client = _try_get_qdrant_client(_config) or QdrantClient(url=_config.qdrant_url)
+        async with open_connection(_config.db_path) as conn:
+            return await scan_for_duplicates(
+                conn, qdrant_client, vault_root.path, note_ids=None
+            )
+
+    candidates = asyncio.run(_run())
+    logger.info(
+        "duplicates_scan_task(correlation_id=%s) found %d candidate(s)",
+        correlation_id,
+        len(candidates),
+    )
+
+
+@huey.task(retries=3, retry_delay=10)  # type: ignore[untyped-decorator]  # huey ships no py.typed
+def reindex_task(note_id: int | None, correlation_id: str) -> None:
+    """MCP `reindex_start` tool's task-backed counterpart (design doc
+    §2.3). A specific `note_id` re-indexes just that note; `None` re-runs
+    the whole-vault `index_bootstrap` pass. Requires a real, reachable
+    Qdrant client (`_get_qdrant_client`, not the best-effort `_try_get_
+    qdrant_client`) -- same reasoning as `run_index_bootstrap`: there is no
+    meaningful metadata-only fallback for an operation whose entire purpose
+    is indexing."""
+
+    async def _run() -> None:
+        vault_root = _require_vault_root(_config)
+        qdrant_client = _get_qdrant_client(_config)
+        async with open_connection(_config.db_path) as conn:
+            if note_id is not None:
+                await index_note(
+                    conn,
+                    qdrant_client,
+                    vault_root,
+                    note_id,
+                    correlation_id=correlation_id,
+                    causation_id=None,
+                )
+            else:
+                await index_bootstrap(
+                    conn, qdrant_client, vault_root, correlation_id=correlation_id
+                )
+
+    asyncio.run(_run())
 
 
 def start_watcher(config: AthenaConfig | None = None) -> VaultWatcher:

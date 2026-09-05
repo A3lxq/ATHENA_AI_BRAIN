@@ -259,3 +259,16 @@ async def list_stale_candidates(conn: aiosqlite.Connection, *, cutoff: str) -> l
     )
     rows = await cursor.fetchall()
     return [_row_to_note(row) for row in rows]
+
+
+async def count_active(conn: aiosqlite.Connection) -> int:
+    """Total currently-active (`deleted_at IS NULL`) note count -- feeds
+    `vault_status` (docs/design/mcp-server.md §2.1), a cheap `COUNT(*)`
+    rather than `len(list_active(...))` since the caller has no other use
+    for the full rows.
+    """
+    cursor = await conn.execute("SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL")
+    row = await cursor.fetchone()
+    if row is None:
+        raise RuntimeError("SELECT COUNT(*) did not yield a row")
+    return int(row[0])

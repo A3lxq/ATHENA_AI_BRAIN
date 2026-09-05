@@ -91,15 +91,27 @@
 - `athena.retrieval.vector_search`: extended with `find_similar_by_point_id` (query Qdrant by an existing point's ID directly, self-excluded).
 - CLI: `athena duplicates {scan,list,resolve,merge}`, `athena lifecycle stale-sweep`; worker gained a daily `stale_sweep_task` periodic job.
 - Test suite: 356 tests total (67 new this session, 5 correctly `skip`-marked pending Docker/Qdrant access) — all passing; mypy --strict clean; ruff clean. Live end-to-end CLI verification (scan → resolve → merge against a real scratch vault, Qdrant unreachable throughout) confirmed correct duplicate detection, graceful semantic-signal degradation, and correct merge/tombstone/provenance database state via direct inspection.
+- `docs/design/mcp-server.md`: design for the unified MCP server implementing ADR-0007's tool contract (minus three families blocked on Phase 7/8/9 infrastructure), including research re-verifying the `mcp` SDK directly against the installed 2.1.1 package (server class renamed `MCPServer` since ADR-0007's v2.0.0-era research), the elicitation/MRTR mechanism, and an empirical stdout-safety check for the stdio transport.
+- `athena.mcp_server` (new package): the unified MCP server, `python -m athena.mcp_server`, resolving the placeholder `deployment/bubblewrap/athena-mcp-launch.sh` has referenced since Phase 1.
+- `athena.mcp_server.read_tools`: `vault_search`, `note_read`/`vault://{path}` resource, `note_related`, `note_duplicates`, `note_provenance`, `vault_status`, `system_diagnostics`.
+- `athena.mcp_server.job_tools`: `duplicates_scan`, `reindex_start` (task-backed), `job_status`/`job_cancel` (the interim tasks-extension shim ADR-0007 specified).
+- `athena.mcp_server.write_tools`: `note_create`, `note_move`.
+- `athena.mcp_server.mutation_tools`: `note_update` (patch/overwrite modes), `note_link`, `note_delete`, `note_merge` — the destructive tools, MRTR-confirmed with exact-match verification, built directly rather than delegated.
+- `athena.db.repository.{provenance,research_jobs,notes}` extended with `get_activities_for_note`, `get_by_id`/`mark_cancelled`/`count_by_status`, `count_active`. `athena.worker` gained `duplicates_scan_task`/`reindex_task`.
+- Two real API-behavior findings, verified empirically: `athena.diagnostics.run_doctor()`'s internal `asyncio.run()` crashes inside an async tool handler's already-running event loop (fixed via `asyncio.to_thread`); an MCP tool that *raises* has its message replaced by a generic SDK wrapper before reaching the client (confirmed via a real client/server round trip) — every tool in the server now returns error strings instead of raising.
+- A real security finding: `resolve_vault_path(..., PathMode.CREATE)` silently resolves to an already-existing target rather than raising — `note_create` closes the resulting race with `os.open(O_CREAT|O_EXCL|O_NOFOLLOW)`, `note_move` with `os.link`+`os.unlink` rather than `Path.rename()`.
+- Test suite: 413 tests total (57 new this session, 5 correctly `skip`-marked pending Docker/Qdrant access, unchanged) — all passing; mypy --strict clean; ruff clean. Live verification confirmed the server builds with all 17 tools/1 resource correctly annotated, and a real `ClientSession` over the SDK's in-memory transport successfully exercised multiple tools end-to-end.
 
 ### Not yet implemented
 - `watchdog` supply-chain review (flagged as required, not yet performed)
 - `fastembed`/miniCOIL revision pinning (no mechanism exists upstream)
-- `athena.mcp_server` (MCP server entry point)
 - The zero-results-on-full-degradation gap in Phase 4's keyword-only fallback (`docs/design/retrieval-pipeline.md` §8) — a real design decision deferred to a future phase, not fixed in this pass
 - Regression-gating threshold for `athena retrieval evaluate` (currently always exits 0)
 - Retrieval-evaluation corpus scale-up to `TESTING_STRATEGY.md`'s 30-60 note target (currently 10 notes/17 questions)
 - Status promotion beyond `'draft'` → `'active'` (`'active'` → `'verified'`/`'archived'` remain fully manual, no policy proposed)
+- `note_summarize`, `note_history`/`git_status`/`git_log`/`git_commit`, `research_start`/`research_commit` MCP tools — deliberately deferred, blocked on Phase 9/8/7 infrastructure respectively
+- Secret-scanning `note_create`/`note_update` content before writing (`docs/design/mcp-server.md` §6/§8 — a real, named gap)
+- A full wire-level elicitation round-trip integration test (elicitation logic and protocol dispatch are each fully tested separately, not combined)
 - Duplicate-detection default thresholds are untuned against real vault data (`docs/design/knowledge-intelligence.md` §8)
 - Secret re-scanning of merged content (a deliberate scope decision, `docs/design/knowledge-intelligence.md` §6, not an oversight)
 - Event engine

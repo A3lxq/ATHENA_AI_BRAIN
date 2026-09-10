@@ -491,10 +491,13 @@ already specifies most of this design's expected behavior in advance
   research named (§7 point 4 there) should be built now or stays
   deferred** — this design does not build it (matches ADR-0007's own
   "not decided" framing), flagged again rather than silently dropped.
-- **Live MCP integration testing** may hit the same Docker/Qdrant
-  environment blocker every prior phase has — any test needing a live
-  Qdrant server for a full `vault_search` round-trip will need the same
-  `skip`-marking discipline, not a silent omission.
+- **Resolved 2026-09-10, and this item's premise turned out to be
+  unnecessary anyway**: Docker access was restored that session, but
+  `tests/mcp_server/` never actually needed it — every test there (including
+  `test_server_integration.py`'s real client/server round trips) already
+  used embedded (`:memory:`) Qdrant clients successfully, matching every
+  other phase's established test-fixture pattern. No test in this package
+  was ever `skip`-marked.
 
 ## Sources Cited
 

@@ -468,10 +468,16 @@ surface itself doesn't exist until Phase 6):
   thresholds (`0.5` scan threshold, `0.85` duplicate semantic threshold,
   `0.5` related-notes threshold) against; flagged for tuning once this
   runs against the real vault, not treated as load-bearing constants.
-- **Live Qdrant integration testing remains blocked** in this development
-  environment (unchanged since Phase 3) — the semantic-duplicate and
-  related-notes integration tests above are written correctly but
-  `skip`-marked pending Docker access, same as every prior phase.
+- **Correction, 2026-09-10**: this item as originally written overstated the
+  gap. On review, no test in `tests/intelligence/` was ever actually
+  `pytest.mark.skip`-marked — the semantic-duplicate and related-notes
+  tests all used embedded (`:memory:`) Qdrant clients successfully from the
+  start (Phase 4's own established pattern), so there was nothing here
+  genuinely blocked on live Docker/Qdrant access. Docker access was
+  separately resolved 2026-09-10 (see the indexing-pipeline and
+  retrieval-pipeline design docs' own §8 for the phases that actually did
+  have real skip-marked tests), and the full suite (including this
+  module's) passes unaffected either way.
 - **Secret re-scanning of merged content** (§6) — flagged as a reasonable
   defense-in-depth addition, not built in this pass.
 

@@ -4,7 +4,6 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 from huey import SqliteHuey
 from qdrant_client import QdrantClient, models
 
@@ -194,20 +193,30 @@ def test_find_similar_by_point_id_respects_score_threshold(tmp_path: Path) -> No
 
 # --- Integration tests: require a real Qdrant server. -----------------------
 #
-# Docker access is blocked in this development environment (design doc §0/§8)
-# -- written as real, correct test code against a real server and skipped,
-# not omitted, so it stays visible in the suite.
+# Docker access was blocked in this development environment through Phase 6
+# (design doc §0/§8); resolved 2026-09-10 (see docs/sessions/ for that
+# session's record) -- these now run against a real, local, pinned-version
+# Qdrant server (docker run qdrant/qdrant:v1.19.1, 127.0.0.1-only per
+# ADR-0006) instead of being skipped.
+#
+# Unlike the ":memory:" tests above (a fresh, isolated client per test), this
+# shares one persistent real server/collection with tests/indexing/
+# test_qdrant_store.py's own real-server tests across the whole suite run --
+# confirmed empirically the first time this test actually ran against a live
+# server: leftover points from an earlier test in the same run were still
+# present, producing a real, reproducible false failure (3 hits instead of 1)
+# that had nothing to do with the status filter under test. Clearing the
+# collection first gives this test the isolation ":memory:" always gave it
+# for free.
 
-_SKIP_REASON = (
-    "requires a real Qdrant server; Docker access blocked in this dev "
-    "environment, see docs/design/retrieval-pipeline.md §8"
-)
 
-
-@pytest.mark.skip(reason=_SKIP_REASON)
 def test_status_filter_excludes_archived_points_against_real_server(tmp_path: Path) -> None:
     client = QdrantClient(url="http://127.0.0.1:6333")
     ensure_collection(client, _huey(tmp_path))
+    client.delete(
+        collection_name=COLLECTION_ALIAS,
+        points_selector=models.FilterSelector(filter=models.Filter()),
+    )
 
     upsert_chunks(
         client,

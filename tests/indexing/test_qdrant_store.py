@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from huey import SqliteHuey
 from qdrant_client import QdrantClient, models
 
@@ -62,35 +61,49 @@ def test_ensure_collection_alias_resolves_to_a_real_collection(tmp_path: Path) -
 
 # --- Integration tests: require a real Qdrant server. -----------------------
 #
-# Docker access is blocked in this development environment (design doc §0/§8)
-# -- these are written as real, correct test code against a real server and
-# are skipped, not omitted, so they are visible in the suite and can be
-# unskipped by anyone with Docker access (or in a future CI environment).
+# Docker access was blocked in this development environment through Phase 6
+# (design doc §0/§8); resolved 2026-09-10 -- these now run against a real,
+# local, pinned-version Qdrant server (docker run qdrant/qdrant:v1.19.1,
+# 127.0.0.1-only per ADR-0006) instead of being skipped.
+#
+# Unlike the ":memory:" tests above (a fresh, isolated client per test),
+# these all share one persistent real server/collection across the whole
+# suite run -- confirmed empirically the first time these actually ran
+# against a live server: leftover points from one test were still present
+# when a later test queried the same collection, producing a real,
+# reproducible false failure (3 hits instead of 1) that had nothing to do
+# with the code under test. `_clear_real_collection` wipes all points (not
+# the collection/alias itself) before each such test, giving per-test
+# isolation without re-paying `ensure_collection`'s alias-creation cost.
 
-_SKIP_REASON = (
-    "requires a real Qdrant server; Docker access blocked in this dev "
-    "environment, see docs/design/indexing-pipeline.md §8"
-)
+
+def _clear_real_collection(client: QdrantClient) -> None:
+    client.delete(
+        collection_name=COLLECTION_ALIAS,
+        points_selector=models.FilterSelector(filter=models.Filter()),
+    )
 
 
-@pytest.mark.skip(reason=_SKIP_REASON)
 def test_ensure_collection_alias_resolves_against_real_server(tmp_path: Path) -> None:
     client = QdrantClient(url="http://127.0.0.1:6333")
     huey = _huey(tmp_path)
 
     ensure_collection(client, huey)
 
-    aliases = client.get_collection_aliases(
-        client.get_collection_aliases(COLLECTION_ALIAS).aliases[0].collection_name
-    )
+    # get_collection_aliases() takes a real collection name, not an alias --
+    # confirmed empirically: passing the alias name silently returns an
+    # empty list rather than erroring. get_aliases() (no args, list
+    # everything) + filter is the correct pattern, already used by
+    # test_ensure_collection_is_idempotent above.
+    aliases = client.get_aliases()
     assert any(a.alias_name == COLLECTION_ALIAS for a in aliases.aliases)
 
 
-@pytest.mark.skip(reason=_SKIP_REASON)
 def test_upsert_and_delete_round_trip_against_real_server(tmp_path: Path) -> None:
     client = QdrantClient(url="http://127.0.0.1:6333")
     huey = _huey(tmp_path)
     ensure_collection(client, huey)
+    _clear_real_collection(client)
 
     chunks = [
         Chunk(text="first chunk of note 1", chunk_index=0, token_count=5),
@@ -130,11 +143,11 @@ def test_upsert_and_delete_round_trip_against_real_server(tmp_path: Path) -> Non
     assert remaining == []
 
 
-@pytest.mark.skip(reason=_SKIP_REASON)
 def test_delete_points_for_note_only_removes_target_note(tmp_path: Path) -> None:
     client = QdrantClient(url="http://127.0.0.1:6333")
     huey = _huey(tmp_path)
     ensure_collection(client, huey)
+    _clear_real_collection(client)
 
     chunk_a = [Chunk(text="note a chunk", chunk_index=0, token_count=3)]
     chunk_b = [Chunk(text="note b chunk", chunk_index=0, token_count=3)]
@@ -167,11 +180,11 @@ def test_delete_points_for_note_only_removes_target_note(tmp_path: Path) -> None
     assert len(remaining_b) == 1
 
 
-@pytest.mark.skip(reason=_SKIP_REASON)
 def test_sparse_vector_upsert_and_query_round_trip_with_idf_modifier(tmp_path: Path) -> None:
     client = QdrantClient(url="http://127.0.0.1:6333")
     huey = _huey(tmp_path)
     ensure_collection(client, huey)
+    _clear_real_collection(client)
 
     chunks = [Chunk(text="qdrant hybrid search with sparse vectors", chunk_index=0, token_count=6)]
     dense = [[0.1] * 1024]

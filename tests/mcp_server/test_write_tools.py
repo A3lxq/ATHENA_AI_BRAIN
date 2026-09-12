@@ -4,9 +4,11 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
+from tests.git.conftest import init_repo
 
 from athena.config import AthenaConfig
 from athena.db.repository import notes as notes_repo
+from athena.git.read import get_log
 from athena.mcp_server import _runtime, write_tools
 from athena.safety.paths import VaultRoot
 
@@ -28,6 +30,10 @@ def _patch_runtime(
         secret_scanner_block_on_high_confidence=False,
         qdrant_url="http://127.0.0.1:6333",
         log_level="INFO",
+        git_auto_commit_enabled=True,
+        git_auto_push_enabled=False,
+        git_push_interval_minutes=60,
+        git_command_timeout_s=5.0,
     )
     monkeypatch.setattr(_runtime, "config", config)
     monkeypatch.setattr(_runtime, "require_vault_root", lambda: vault_root)
@@ -162,3 +168,76 @@ async def test_note_move_returns_clear_message_when_source_not_recorded(
     assert "no such note" in result
     assert (vault_dir / "untracked.md").exists()
     assert not (vault_dir / "elsewhere.md").exists()
+
+
+# --- auto-commit wiring (docs/design/git-automation.md §2.4) --------------
+
+
+async def test_note_create_auto_commits_when_vault_is_a_git_repo(
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot
+) -> None:
+    init_repo(vault_dir)
+
+    result = await write_tools.note_create("a.md", "content")
+
+    assert "note created" in result
+    log = await get_log(vault_root)
+    assert len(log) == 1
+    assert log[0].subject == "note_create: a.md"
+
+
+async def test_note_move_auto_commits_when_vault_is_a_git_repo(
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot
+) -> None:
+    init_repo(vault_dir)
+    await write_tools.note_create("old.md", "content to move")
+
+    result = await write_tools.note_move("old.md", "new.md")
+
+    assert "note moved" in result
+    log = await get_log(vault_root)
+    assert len(log) == 2
+    assert log[0].subject == "note_move: 'old.md' -> 'new.md'"
+
+
+async def test_note_create_succeeds_unaffected_when_vault_is_not_a_git_repo(
+    conn: aiosqlite.Connection, vault_dir: Path
+) -> None:
+    # vault_dir is a plain directory here -- no `init_repo` call -- exactly
+    # the pre-existing-behavior baseline every other test in this file
+    # already exercises; asserted explicitly to document the requirement.
+    result = await write_tools.note_create("no-git.md", "content")
+
+    assert "note created" in result
+    assert (vault_dir / "no-git.md").read_text(encoding="utf-8") == "content"
+
+
+async def test_note_create_succeeds_when_auto_commit_disabled_even_in_a_git_repo(
+    conn: aiosqlite.Connection,
+    vault_dir: Path,
+    vault_root: VaultRoot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    init_repo(vault_dir)
+    disabled_config = AthenaConfig(
+        vault_root=vault_dir,
+        data_dir=_runtime.config.data_dir,
+        db_path=_runtime.config.db_path,
+        huey_db_path=_runtime.config.huey_db_path,
+        huey_serializer_secret=None,
+        secret_scanner_block_on_high_confidence=False,
+        qdrant_url="http://127.0.0.1:6333",
+        log_level="INFO",
+        git_auto_commit_enabled=False,
+        git_auto_push_enabled=False,
+        git_push_interval_minutes=60,
+        git_command_timeout_s=5.0,
+    )
+    monkeypatch.setattr(_runtime, "config", disabled_config)
+
+    result = await write_tools.note_create("no-commit.md", "content")
+
+    assert "note created" in result
+    assert (vault_dir / "no-commit.md").read_text(encoding="utf-8") == "content"
+    log = await get_log(vault_root)
+    assert log == []

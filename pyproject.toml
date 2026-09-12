@@ -35,6 +35,10 @@ dev = [
     "ruff>=0.6.0",
     "mypy>=1.11",
     "types-PyYAML",
+    # ADR-0005/docs/GIT_WORKFLOW.md: the pre-commit framework itself; the
+    # gitleaks hook it drives is a separately-installed Go binary, pinned
+    # in .pre-commit-config.yaml, not a pip package.
+    "pre-commit>=4.0.0",
 ]
 
 [build-system]
@@ -58,7 +62,12 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S", "A"]
 # S101: allow `assert` in tests.
-per-file-ignores = { "tests/**/*.py" = ["S101"] }
+# S603/S607: tests/git/ and test_worker.py's git-push tests invoke the real
+# `git` binary by name (never with untrusted/dynamic input, always a fixed,
+# hand-written argv) to set up throwaway repositories -- exactly the kind of
+# subprocess call these rules exist to flag in production code, not in test
+# fixtures shelling out to a well-known dev tool.
+per-file-ignores = { "tests/**/*.py" = ["S101"], "tests/git/**/*.py" = ["S101", "S603", "S607"], "tests/test_worker.py" = ["S101", "S603", "S607"] }
 
 [tool.mypy]
 python_version = "3.12"

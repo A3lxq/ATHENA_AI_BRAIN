@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from athena.db.connection import open_connection
 from athena.db.repository import duplicates as duplicates_repo
 from athena.db.repository import notes as notes_repo
+from athena.git.write import auto_commit_mutation
 from athena.intelligence.merge import merge_notes
 from athena.mcp_server import _runtime
 from athena.safety.paths import PathMode, VaultPathError, resolve_vault_path
@@ -118,6 +119,15 @@ async def note_update(
         await update_note_content(
             conn, note.id, content_hash=_content_hash(new_body), updated_at=_now()
         )
+        await auto_commit_mutation(
+            conn,
+            vault_root,
+            paths=[path],
+            operation=f"note_update:{mode}",
+            detail=path,
+            enabled=_runtime.config.git_auto_commit_enabled,
+            timeout_s=_runtime.config.git_command_timeout_s,
+        )
         return f"updated {path!r} ({mode} mode)"
 
 
@@ -142,6 +152,15 @@ async def note_link(path: str, link_target: str, link_text: str | None = None) -
         safe_path.path.write_text(new_body, encoding="utf-8")
         await update_note_content(
             conn, note.id, content_hash=_content_hash(new_body), updated_at=_now()
+        )
+        await auto_commit_mutation(
+            conn,
+            vault_root,
+            paths=[path],
+            operation="note_link",
+            detail=path,
+            enabled=_runtime.config.git_auto_commit_enabled,
+            timeout_s=_runtime.config.git_command_timeout_s,
         )
         return f"linked {link_target!r} into {path!r}"
 
@@ -173,6 +192,15 @@ async def note_delete(path: str, ctx: Context) -> str:
             return f"invalid path: {exc}"
         safe_path.path.unlink()
         await delete_note(conn, note.id, deleted_at=_now())
+        await auto_commit_mutation(
+            conn,
+            vault_root,
+            paths=[path],
+            operation="note_delete",
+            detail=path,
+            enabled=_runtime.config.git_auto_commit_enabled,
+            timeout_s=_runtime.config.git_command_timeout_s,
+        )
         return f"deleted {path!r}"
 
 
@@ -218,6 +246,15 @@ async def note_merge(candidate_id: int, keep_path: str, ctx: Context) -> str:
             keep_note_id=keep_note.id,
             absorb_note_id=absorb_note_id,
             merged_by="mcp:note_merge",
+        )
+        await auto_commit_mutation(
+            conn,
+            vault_root,
+            paths=[keep_path],
+            operation="note_merge",
+            detail=keep_path,
+            enabled=_runtime.config.git_auto_commit_enabled,
+            timeout_s=_runtime.config.git_command_timeout_s,
         )
         return (
             f"merged note_id={merge_result.absorbed_note_id} into "

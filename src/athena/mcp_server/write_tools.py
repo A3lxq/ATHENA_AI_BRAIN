@@ -53,6 +53,7 @@ from mcp.types import ToolAnnotations
 
 from athena.db.connection import open_connection
 from athena.db.repository import notes as notes_repo
+from athena.git.write import auto_commit_mutation
 from athena.mcp_server import _runtime
 from athena.safety.paths import PathMode, VaultPathError, resolve_vault_path
 from athena.vault.lifecycle import create_note, move_note
@@ -127,6 +128,15 @@ async def note_create(path: str, content: str, title: str | None = None) -> str:
             created_at=now,
             changed_by="mcp:note_create",
         )
+        await auto_commit_mutation(
+            conn,
+            vault_root,
+            paths=[vault_relative_path],
+            operation="note_create",
+            detail=vault_relative_path,
+            enabled=_runtime.config.git_auto_commit_enabled,
+            timeout_s=_runtime.config.git_command_timeout_s,
+        )
 
     return f"note created: note_id={note_id} path={vault_relative_path!r}"
 
@@ -182,6 +192,15 @@ async def note_move(path: str, new_path: str) -> str:
         new_vault_relative_path = safe_path_new.path.relative_to(vault_root.path).as_posix()
         now = _now()
         await move_note(conn, note.id, new_path=new_vault_relative_path, updated_at=now)
+        await auto_commit_mutation(
+            conn,
+            vault_root,
+            paths=[path, new_vault_relative_path],
+            operation="note_move",
+            detail=f"{path!r} -> {new_vault_relative_path!r}",
+            enabled=_runtime.config.git_auto_commit_enabled,
+            timeout_s=_runtime.config.git_command_timeout_s,
+        )
 
     return f"note moved: note_id={note.id} path={new_vault_relative_path!r}"
 

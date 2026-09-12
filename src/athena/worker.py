@@ -32,6 +32,8 @@ from athena.db.connection import open_connection
 from athena.db.repository import duplicates as duplicates_repo
 from athena.db.repository import events as events_repo
 from athena.db.repository import research_jobs as research_jobs_repo
+from athena.git.write import PushResult
+from athena.git.write import push as git_push
 from athena.hardening.permissions import ensure_private_dir
 from athena.hardening.serializer import SerializerMisconfigured, assert_safe_job_serializer
 from athena.indexing.index_note import IndexBootstrapSummary, index_bootstrap, index_note
@@ -64,6 +66,7 @@ __all__ = [
     "index_note_task",
     "reconcile_vault_task",
     "stale_sweep_task",
+    "git_push_task",
     "duplicates_scan_task",
     "reindex_task",
     "research_task",
@@ -431,6 +434,43 @@ def stale_sweep_task() -> None:  # pragma: no cover -- exercised via run_stale_s
     run_stale_sweep(_config)
 
 
+def run_git_push(config: AthenaConfig | None = None) -> PushResult:
+    """Synchronous entry point wrapping `athena.git.write.push` (design doc
+    §2.6), also called from the periodic `git_push_task` below."""
+    active_config = config or _config
+    vault_root = _require_vault_root(active_config)
+    return asyncio.run(git_push(vault_root, timeout_s=active_config.git_command_timeout_s))
+
+
+@huey.periodic_task(  # type: ignore[untyped-decorator]  # huey ships no py.typed
+    # `*/N` restarts counting from :00 each hour (a genuine crontab
+    # granularity limitation, not a bug): for the default N=60 this means
+    # exactly hourly, matching `docs/GIT_WORKFLOW.md`'s example cadence; an
+    # N that doesn't evenly divide 60 (e.g. 45) produces uneven real gaps
+    # (:00 and :45, i.e. 45 then 15 minutes apart) rather than a strict
+    # N-minute period -- acceptable for a background backup cadence, but
+    # worth stating plainly rather than silently.
+    crontab(minute=f"*/{_config.git_push_interval_minutes}"),
+    retries=3,
+    retry_delay=30,
+    retry_backoff=2,
+)
+def git_push_task() -> None:  # pragma: no cover -- exercised via run_git_push in tests
+    """Periodic auto-push (design doc §2.6) -- no-ops immediately if
+    `git_auto_push_enabled` is `False` (the default, per `docs/GIT_WORKFLOW.
+    md`: auto-push touches an external system and defaults off). The
+    bounded `retries=3, retry_delay=30, retry_backoff=2` above gives a
+    transient network failure a real chance to clear without retrying
+    forever; `vault_status`'s live ahead/behind query is always available
+    to surface "N commits ahead, not yet pushed" independent of whether
+    the last push attempt itself succeeded."""
+    if not _config.git_auto_push_enabled:
+        return
+    result = run_git_push(_config)
+    if not result.pushed:
+        logger.warning("periodic git push failed: %s", result.failure_kind)
+
+
 @huey.task(retries=3, retry_delay=10)  # type: ignore[untyped-decorator]  # huey ships no py.typed
 def duplicates_scan_task(correlation_id: str) -> None:
     """MCP `duplicates_scan` tool's task-backed counterpart (design doc
@@ -584,6 +624,8 @@ def run_research_commit(
                 target_path=target_path,
                 committed_by="cli",
                 block_on_high_confidence_secrets=active_config.secret_scanner_block_on_high_confidence,
+                git_auto_commit_enabled=active_config.git_auto_commit_enabled,
+                git_command_timeout_s=active_config.git_command_timeout_s,
             )
 
     return asyncio.run(_run())

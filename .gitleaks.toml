@@ -1,0 +1,22 @@
+# ATHENA AI-BRAIN gitleaks configuration (docs/GIT_WORKFLOW.md's "gitleaks
+# pre-commit setup" runbook, ADR-0005).
+#
+# Extends gitleaks' own default ruleset rather than replacing it -- this
+# repo defines no custom rules of its own, only a narrowly-scoped path
+# allowlist for known-fine, intentionally secret-shaped test fixtures.
+# Per docs/GIT_WORKFLOW.md: "tightly-scoped fixture-path exclusions,
+# reviewed at PR time -- never broad path exclusions."
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "known-fine, intentionally secret-shaped test fixtures"
+paths = [
+    # AWS's own published example access key (AKIAIOSFODNN7EXAMPLE, from
+    # AWS's official docs), used to exercise the real detect-secrets
+    # AWSKeyDetector path -- not a real credential.
+    '''tests/vault/test_ingest\.py''',
+    '''tests/research/test_workflow\.py''',
+    '''tests/security/test_secrets\.py''',
+]

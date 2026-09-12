@@ -9,10 +9,12 @@ from pathlib import Path
 import aiosqlite
 import pytest
 from qdrant_client import QdrantClient
+from tests.git.conftest import init_repo
 
 from athena.db.repository import notes as notes_repo
 from athena.db.repository import provenance as provenance_repo
 from athena.db.repository import research_jobs as research_jobs_repo
+from athena.git.read import get_log
 from athena.research.extract import ExtractedArticle
 from athena.research.fetch import FetchedPage, FetchRefused
 from athena.research.workflow import commit_draft, run_research
@@ -274,3 +276,56 @@ async def test_commit_draft_blocks_when_configured_to_block_on_high_confidence(
     assert not (vault_dir / "research" / "leaky-page-2.md").exists()
     row = await notes_repo.get_by_path(conn, "research/leaky-page-2.md")
     assert row is None
+
+
+# --- commit_draft: auto-commit wiring (docs/design/git-automation.md §2.4) -
+
+
+async def test_commit_draft_auto_commits_when_vault_is_a_git_repo(
+    conn: aiosqlite.Connection, qdrant_client: QdrantClient, vault_root: VaultRoot, vault_dir: Path
+) -> None:
+    init_repo(vault_dir)
+    job_id = await research_jobs_repo.insert(
+        conn, huey_task_id="t8", job_type="research_start", created_at="2026-09-10T00:00:00+00:00"
+    )
+    await research_jobs_repo.record_draft(
+        conn, job_id, draft_title="Git Backed Topic", draft_body="some committed content",
+        draft_source_urls=["https://a.example/"],
+    )
+
+    result = await commit_draft(
+        conn, qdrant_client, vault_root, job_id,
+        dry_run=False, target_path=None, committed_by="test",
+        git_auto_commit_enabled=True,
+    )
+
+    assert result.note_id is not None
+    log = await get_log(vault_root)
+    assert len(log) == 1
+    assert log[0].subject == "research_commit: research/git-backed-topic.md"
+
+
+async def test_commit_draft_succeeds_when_auto_commit_disabled_even_in_a_git_repo(
+    conn: aiosqlite.Connection, qdrant_client: QdrantClient, vault_root: VaultRoot, vault_dir: Path
+) -> None:
+    init_repo(vault_dir)
+    job_id = await research_jobs_repo.insert(
+        conn, huey_task_id="t9", job_type="research_start", created_at="2026-09-10T00:00:00+00:00"
+    )
+    await research_jobs_repo.record_draft(
+        conn, job_id, draft_title="No Commit Topic", draft_body="uncommitted content",
+        draft_source_urls=[],
+    )
+
+    result = await commit_draft(
+        conn, qdrant_client, vault_root, job_id,
+        dry_run=False, target_path=None, committed_by="test",
+        git_auto_commit_enabled=False,
+    )
+
+    assert result.note_id is not None
+    note = await notes_repo.get_by_id(conn, result.note_id)
+    assert note is not None
+    assert note.path == "research/no-commit-topic.md"
+    log = await get_log(vault_root)
+    assert log == []

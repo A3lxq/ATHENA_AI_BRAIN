@@ -30,6 +30,7 @@ from athena.db.repository import notes as notes_repo
 from athena.db.repository import provenance as provenance_repo
 from athena.db.repository import research_jobs as research_jobs_repo
 from athena.db.repository import secret_findings as secret_findings_repo
+from athena.git.write import auto_commit_mutation
 from athena.indexing.index_note import index_note
 from athena.research.extract import extract_article
 from athena.research.fetch import FetchRefused, fetch_url
@@ -170,6 +171,8 @@ async def commit_draft(
     committed_by: str,
     block_on_high_confidence_secrets: bool = False,
     secret_scan_timeout_s: float = 5.0,
+    git_auto_commit_enabled: bool = True,
+    git_command_timeout_s: float = 30.0,
 ) -> CommitResult:
     """Read job `job_id`'s draft back and, when `dry_run=False`, write it
     into the vault. Raises `ValueError` for a job with no draft yet (still
@@ -288,5 +291,15 @@ async def commit_draft(
         )
 
     await research_jobs_repo.record_result_note(conn, job_id, note_id)
+
+    await auto_commit_mutation(
+        conn,
+        vault_root,
+        paths=[vault_relative_path],
+        operation="research_commit",
+        detail=vault_relative_path,
+        enabled=git_auto_commit_enabled,
+        timeout_s=git_command_timeout_s,
+    )
 
     return CommitResult(note_id=note_id, preview_title=title, preview_body=body)

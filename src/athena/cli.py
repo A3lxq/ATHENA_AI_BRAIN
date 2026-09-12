@@ -12,11 +12,20 @@ import argparse
 import asyncio
 import sys
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from athena import __version__
 from athena.config import load_config
 from athena.diagnostics import DoctorReport, run_doctor
 from athena.logging_setup import configure_logging
+
+if TYPE_CHECKING:
+    # Only for the `_require_vault_root_for_cli` helper's type annotations --
+    # this module's stated policy is lazy imports inside command functions
+    # for anything not needed by every subcommand, and TYPE_CHECKING-guarded
+    # imports never execute at runtime.
+    from athena.config import AthenaConfig
+    from athena.safety.paths import VaultRoot
 
 _STATUS_SYMBOL = {"ok": "[ok]  ", "warn": "[warn]", "fail": "[FAIL]"}
 
@@ -275,6 +284,157 @@ def _cmd_research_commit(args: argparse.Namespace) -> int:
     return 0
 
 
+_NOT_A_GIT_REPOSITORY_MESSAGE = (
+    "[FAIL] vault is not a Git repository -- run `git init` in the vault directory "
+    "to enable Git automation"
+)
+
+
+def _require_vault_root_for_cli(config: AthenaConfig) -> VaultRoot | None:
+    from athena.safety.paths import VaultRoot
+
+    if config.vault_root is None:
+        print("[FAIL] ATHENA_VAULT_DIR is not set -- no vault is configured")
+        return None
+    return VaultRoot.initialize(config.vault_root)
+
+
+def _cmd_git_status(_args: argparse.Namespace) -> int:
+    # A direct athena.git.read bridge, mirroring _cmd_migrate's own
+    # asyncio.run() bridge -- no Huey/worker.py involvement and no
+    # ATHENA_HUEY_SECRET requirement for a read-only Git status check.
+    from athena.git.read import GitStatus, get_status, is_git_repository
+
+    config = load_config()
+    vault_root = _require_vault_root_for_cli(config)
+    if vault_root is None:
+        return 1
+
+    async def _run() -> GitStatus | None:
+        if not await is_git_repository(vault_root, timeout_s=config.git_command_timeout_s):
+            return None
+        return await get_status(vault_root, timeout_s=config.git_command_timeout_s)
+
+    status = asyncio.run(_run())
+    if status is None:
+        print(_NOT_A_GIT_REPOSITORY_MESSAGE)
+        return 1
+
+    print(f"working tree: {'clean' if status.is_clean else 'dirty'}")
+    if status.changed_paths:
+        print("changed paths:")
+        for path in status.changed_paths:
+            print(f"  {path}")
+    if status.ahead_behind is not None:
+        print(
+            f"ahead {status.ahead_behind.ahead}, behind {status.ahead_behind.behind} "
+            "(relative to upstream)"
+        )
+    return 0
+
+
+def _cmd_git_log(args: argparse.Namespace) -> int:
+    from athena.git.read import GitLogEntry, get_log, is_git_repository
+
+    config = load_config()
+    vault_root = _require_vault_root_for_cli(config)
+    if vault_root is None:
+        return 1
+
+    async def _run() -> list[GitLogEntry] | None:
+        if not await is_git_repository(vault_root, timeout_s=config.git_command_timeout_s):
+            return None
+        return await get_log(vault_root, limit=args.limit, timeout_s=config.git_command_timeout_s)
+
+    entries = asyncio.run(_run())
+    if entries is None:
+        print(_NOT_A_GIT_REPOSITORY_MESSAGE)
+        return 1
+
+    if not entries:
+        print("no commit history yet")
+        return 0
+    for entry in entries:
+        print(f"{entry.sha[:8]}  {entry.date}  {entry.subject} ({entry.author})")
+    return 0
+
+
+def _cmd_git_commit(args: argparse.Namespace) -> int:
+    from athena.git.read import get_status, is_git_repository
+    from athena.git.wrapper import GitFailureKind
+    from athena.git.write import CommitResult, commit_paths
+
+    config = load_config()
+    vault_root = _require_vault_root_for_cli(config)
+    if vault_root is None:
+        return 1
+    dry_run = not args.commit
+
+    async def _run() -> CommitResult | None:
+        if not await is_git_repository(vault_root, timeout_s=config.git_command_timeout_s):
+            return None
+        status = await get_status(vault_root, timeout_s=config.git_command_timeout_s)
+        message = args.message or (
+            f"manual commit via git_commit: {len(status.changed_paths)} file(s) changed"
+        )
+        return await commit_paths(
+            vault_root, ["."], message, dry_run=dry_run, timeout_s=config.git_command_timeout_s
+        )
+
+    result = asyncio.run(_run())
+    if result is None:
+        print(_NOT_A_GIT_REPOSITORY_MESSAGE)
+        return 1
+
+    if dry_run:
+        print(f"[dry run] {result.dry_run_preview}")
+        print("\nRe-run with --commit to actually write this commit.")
+        return 0
+
+    if not result.committed:
+        if result.failure_kind is GitFailureKind.NOTHING_TO_COMMIT:
+            print("nothing to commit")
+            return 0
+        print(f"[FAIL] commit failed: {result.failure_kind.value}")
+        return 1
+
+    print(f"committed: sha={result.sha}")
+    return 0
+
+
+def _cmd_git_push(args: argparse.Namespace) -> int:
+    from athena.git.read import is_git_repository
+    from athena.git.write import PushResult, push
+
+    config = load_config()
+    vault_root = _require_vault_root_for_cli(config)
+    if vault_root is None:
+        return 1
+    dry_run = not args.push
+
+    async def _run() -> PushResult | None:
+        if not await is_git_repository(vault_root, timeout_s=config.git_command_timeout_s):
+            return None
+        return await push(vault_root, dry_run=dry_run, timeout_s=config.git_command_timeout_s)
+
+    result = asyncio.run(_run())
+    if result is None:
+        print(_NOT_A_GIT_REPOSITORY_MESSAGE)
+        return 1
+
+    if dry_run:
+        print(f"[dry run] {result.dry_run_preview}")
+        print("\nRe-run with --push to actually push.")
+        return 0
+
+    if not result.pushed:
+        print(f"[FAIL] push failed: {result.failure_kind.value}")
+        return 1
+
+    print("pushed successfully")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="athena", description="ATHENA AI-BRAIN CLI")
     parser.add_argument(
@@ -429,6 +589,67 @@ def build_parser() -> argparse.ArgumentParser:
         help="vault-relative path for the new note (default: a slug of the topic under research/)",
     )
     research_commit_parser.set_defaults(func=_cmd_research_commit)
+
+    git_parser = subparsers.add_parser("git", help="vault Git automation commands")
+    git_subparsers = git_parser.add_subparsers(dest="git_command", required=True)
+
+    git_status_parser = git_subparsers.add_parser(
+        "status", help="show the vault repository's working-tree state"
+    )
+    git_status_parser.set_defaults(func=_cmd_git_status)
+
+    git_log_parser = git_subparsers.add_parser(
+        "log", help="show the vault repository's recent commit history"
+    )
+    git_log_parser.add_argument(
+        "--limit", type=int, default=20, help="maximum number of commits to show (default: 20)"
+    )
+    git_log_parser.set_defaults(func=_cmd_git_log)
+
+    git_commit_parser = git_subparsers.add_parser(
+        "commit", help="commit everything currently dirty in the vault repository"
+    )
+    git_commit_parser.add_argument(
+        "--message", default=None, help="commit message (default: an auto-generated one)"
+    )
+    git_commit_group = git_commit_parser.add_mutually_exclusive_group()
+    git_commit_group.add_argument(
+        "--dry-run",
+        dest="commit",
+        action="store_false",
+        help="preview only, write nothing (default)",
+    )
+    git_commit_group.add_argument(
+        "--commit",
+        dest="commit",
+        action="store_true",
+        help=(
+            "actually write the commit (an explicit flag, not merely omitting --dry-run -- "
+            "the CLI has no elicitation mechanism to confirm otherwise)"
+        ),
+    )
+    git_commit_parser.set_defaults(func=_cmd_git_commit, commit=False)
+
+    git_push_parser = git_subparsers.add_parser(
+        "push", help="push the vault repository's current branch to its remote"
+    )
+    git_push_group = git_push_parser.add_mutually_exclusive_group()
+    git_push_group.add_argument(
+        "--dry-run",
+        dest="push",
+        action="store_false",
+        help="preview only, push nothing (default)",
+    )
+    git_push_group.add_argument(
+        "--push",
+        dest="push",
+        action="store_true",
+        help=(
+            "actually push (an explicit flag, not merely omitting --dry-run -- the CLI has "
+            "no elicitation mechanism to confirm otherwise)"
+        ),
+    )
+    git_push_parser.set_defaults(func=_cmd_git_push, push=False)
 
     return parser
 

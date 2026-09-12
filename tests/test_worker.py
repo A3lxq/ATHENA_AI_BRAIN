@@ -72,6 +72,10 @@ def test_build_huey_hard_fails_without_a_secret(
         secret_scanner_block_on_high_confidence=False,
         qdrant_url="http://127.0.0.1:6333",
         log_level="INFO",
+        git_auto_commit_enabled=True,
+        git_auto_push_enabled=False,
+        git_push_interval_minutes=60,
+        git_command_timeout_s=5.0,
     )
     with pytest.raises(SerializerMisconfigured):
         build_huey(config)
@@ -345,3 +349,88 @@ def test_run_research_commit_dry_run_and_real_commit(
     result = worker.run_research_commit(job_id=job_id, dry_run=False)
     assert result.note_id is not None
     assert (vault_dir / "research" / "cli-topic.md").read_text(encoding="utf-8") == "cli body"
+
+
+def test_run_git_push_pushes_to_a_real_local_bare_remote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    from tests.git.conftest import commit_all, init_repo
+
+    bare_dir = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(bare_dir)],
+        check=True,
+        capture_output=True,
+    )
+
+    vault_dir = tmp_path / "vault"
+    init_repo(vault_dir)
+    (vault_dir / "a.md").write_text("a\n", encoding="utf-8")
+    commit_all(vault_dir, "first commit")
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(bare_dir)],
+        cwd=vault_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    worker = _fresh_worker_module(tmp_path, monkeypatch, vault_dir=vault_dir)
+
+    result = worker.run_git_push()
+
+    assert result.pushed is True
+
+
+def test_git_push_task_no_ops_when_auto_push_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.git.conftest import init_repo
+
+    vault_dir = tmp_path / "vault"
+    init_repo(vault_dir)
+
+    # ATHENA_GIT_AUTO_PUSH defaults to false -- _fresh_worker_module doesn't
+    # need to set it explicitly, this confirms the actual default.
+    worker = _fresh_worker_module(tmp_path, monkeypatch, vault_dir=vault_dir)
+    assert worker._config.git_auto_push_enabled is False
+
+    worker.git_push_task.call_local()  # must not raise even with no remote configured at all
+
+
+def test_git_push_task_pushes_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    from tests.git.conftest import commit_all, init_repo
+
+    bare_dir = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(bare_dir)],
+        check=True,
+        capture_output=True,
+    )
+
+    vault_dir = tmp_path / "vault"
+    init_repo(vault_dir)
+    (vault_dir / "a.md").write_text("a\n", encoding="utf-8")
+    commit_all(vault_dir, "first commit")
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(bare_dir)],
+        cwd=vault_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    monkeypatch.setenv("ATHENA_GIT_AUTO_PUSH", "true")
+    worker = _fresh_worker_module(tmp_path, monkeypatch, vault_dir=vault_dir)
+    assert worker._config.git_auto_push_enabled is True
+
+    worker.git_push_task.call_local()
+
+    show_ref = subprocess.run(
+        ["git", "show-ref", "--heads"], cwd=bare_dir, capture_output=True, text=True
+    )
+    assert "refs/heads/main" in show_ref.stdout

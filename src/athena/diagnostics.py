@@ -87,6 +87,40 @@ def _check_vault_root(config: AthenaConfig) -> DoctorCheck:
     return DoctorCheck("vault_root", "ok", f"vault root resolves to {root.path}")
 
 
+async def _read_is_git_repository(vault_root: VaultRoot) -> bool:
+    from athena.git.read import is_git_repository
+
+    return await is_git_repository(vault_root)
+
+
+def _check_vault_git_repo(config: AthenaConfig) -> DoctorCheck:
+    # warn, not fail: ATHENA AI-BRAIN never auto-`git init`s a vault (docs/
+    # design/git-automation.md §0) -- a vault with no Git repository yet is
+    # a normal, unconfigured-optional-infrastructure state, mirroring
+    # vault_root's/qdrant_reachable's own warn-not-fail posture.
+    if config.vault_root is None:
+        return DoctorCheck(
+            "vault_git_repo",
+            "warn",
+            "ATHENA_VAULT_DIR is not set -- no vault is configured yet",
+        )
+    try:
+        root = VaultRoot.initialize(config.vault_root)
+        is_repo = asyncio.run(_read_is_git_repository(root))
+    except (VaultRootConfigError, OSError) as exc:
+        return DoctorCheck("vault_git_repo", "warn", f"unable to check vault Git status: {exc}")
+
+    if not is_repo:
+        return DoctorCheck(
+            "vault_git_repo",
+            "warn",
+            f"{config.vault_root} is not a Git repository -- run `git init` in the vault "
+            "directory to enable Git automation (ATHENA AI-BRAIN never does this "
+            "automatically)",
+        )
+    return DoctorCheck("vault_git_repo", "ok", f"{config.vault_root} is a Git repository")
+
+
 def _check_data_dir(config: AthenaConfig) -> DoctorCheck:
     try:
         ensure_private_dir(config.data_dir)
@@ -195,6 +229,7 @@ def run_doctor(config: AthenaConfig) -> DoctorReport:
     checks = [
         _check_python_version(),
         _check_vault_root(config),
+        _check_vault_git_repo(config),
         _check_data_dir(config),
         _check_db_file_permissions("metadata_db_permissions", config.db_path),
         _check_db_file_permissions("huey_db_permissions", config.huey_db_path),

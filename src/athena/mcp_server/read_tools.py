@@ -195,18 +195,33 @@ async def note_provenance(note_id: int) -> str:
 
 async def vault_status() -> str:
     """Summarize the current state of the vault's knowledge: total active
-    notes, notes still needing (re)indexing, and job counts by status.
+    notes, notes still needing (re)indexing, job counts by status, and (when
+    the vault is a Git repository) how many commits ahead of upstream it is
+    and its most recent commit.
 
     Distinct from `system_diagnostics`, which answers "is the
     infrastructure healthy" rather than "what's the state of my
-    knowledge."
+    knowledge." Works even before a vault is configured (git fields report
+    "not available" in that case).
     """
+    try:
+        vault_root = _runtime.require_vault_root()
+    except RuntimeError:
+        vault_root = None
+
     async with open_connection(_runtime.config.db_path) as conn:
-        status = await get_vault_status(conn)
+        status = await get_vault_status(conn, vault_root)
+
+    git_ahead_by = status.git_ahead_by if status.git_ahead_by is not None else "not available"
+    git_last_commit = (
+        status.git_last_commit if status.git_last_commit is not None else "not available"
+    )
     return (
         f"Total active notes: {status.total_notes}\n"
         f"Notes needing index: {status.notes_needing_index}\n"
-        f"Jobs by status: {status.jobs_by_status}"
+        f"Jobs by status: {status.jobs_by_status}\n"
+        f"Git commits ahead of upstream: {git_ahead_by}\n"
+        f"Git last commit: {git_last_commit}"
     )
 
 

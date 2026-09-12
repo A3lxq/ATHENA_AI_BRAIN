@@ -18,6 +18,7 @@ from athena import __version__
 from athena.logging_setup import configure_logging
 from athena.mcp_server import (
     _runtime,
+    git_tools,
     job_tools,
     mutation_tools,
     read_tools,
@@ -47,6 +48,7 @@ def build_server() -> MCPServer:
     write_tools.register(mcp)
     mutation_tools.register(mcp)
     research_tools.register(mcp)
+    git_tools.register(mcp)
     return mcp
 
 

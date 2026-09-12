@@ -49,6 +49,10 @@ def _patch_runtime(
         secret_scanner_block_on_high_confidence=False,
         qdrant_url="http://127.0.0.1:1",
         log_level="INFO",
+        git_auto_commit_enabled=True,
+        git_auto_push_enabled=False,
+        git_push_interval_minutes=60,
+        git_command_timeout_s=5.0,
     )
     monkeypatch.setattr(_runtime, "config", config)
     monkeypatch.setattr(_runtime, "require_vault_root", lambda: vault_root)
@@ -78,7 +82,8 @@ async def test_list_tools_and_call_note_read_over_a_real_client_session(
             assert "note_read" in tool_names
             assert "note_delete" in tool_names
             # 17 (docs/design/mcp-server.md) + research_start/research_commit (Phase 7)
-            assert len(tool_names) == 19
+            # + git_status/git_log/note_history/git_commit (Phase 8)
+            assert len(tool_names) == 23
 
             call_result = await session.call_tool("note_read", {"path": "a.md"})
             assert not call_result.is_error

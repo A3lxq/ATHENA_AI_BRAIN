@@ -1,0 +1,17 @@
+# ATHENA AI-BRAIN pre-commit configuration.
+#
+# Closes a real, previously-flagged gap: ADR-0005's own "Consequences"
+# section required this be set up as part of Phase 1 ("The `pre-commit`
+# framework with `gitleaks` must be set up... to satisfy the 'never commit
+# secrets' requirement"), but it was never actually done until Phase 8
+# (docs/design/git-automation.md §0). This is a control on THIS software
+# repository's own history -- entirely separate from the vault's own
+# automated commits (`athena.git`), which this file has no bearing on.
+#
+# Install once per clone: `pip install pre-commit && pre-commit install`.
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

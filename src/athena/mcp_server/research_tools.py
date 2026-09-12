@@ -132,6 +132,8 @@ async def research_commit(
                 target_path=target_path,
                 committed_by="mcp:research_commit",
                 block_on_high_confidence_secrets=_runtime.config.secret_scanner_block_on_high_confidence,
+                git_auto_commit_enabled=_runtime.config.git_auto_commit_enabled,
+                git_command_timeout_s=_runtime.config.git_command_timeout_s,
             )
         except ValueError as exc:
             return f"commit failed: {exc}"

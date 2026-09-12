@@ -6,6 +6,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 from qdrant_client import QdrantClient
+from tests.git.conftest import commit_all, init_repo
 
 from athena.config import AthenaConfig
 from athena.db.repository import chunks as chunks_repo
@@ -40,6 +41,10 @@ def patched_runtime(
         secret_scanner_block_on_high_confidence=False,
         qdrant_url="http://127.0.0.1:6333",
         log_level="INFO",
+        git_auto_commit_enabled=True,
+        git_auto_push_enabled=False,
+        git_push_interval_minutes=60,
+        git_command_timeout_s=5.0,
     )
     monkeypatch.setattr(_runtime, "config", config)
     monkeypatch.setattr(_runtime, "get_qdrant_client", lambda: qdrant_client)
@@ -277,6 +282,10 @@ async def test_vault_status_on_empty_db(
 
     assert "Total active notes: 0" in result_text
     assert "Notes needing index: 0" in result_text
+    # vault_dir is a plain (non-Git) directory in this fixture -- git fields
+    # degrade gracefully rather than raising.
+    assert "Git commits ahead of upstream: not available" in result_text
+    assert "Git last commit: not available" in result_text
 
 
 async def test_vault_status_reflects_a_created_note(
@@ -288,6 +297,34 @@ async def test_vault_status_reflects_a_created_note(
 
     assert "Total active notes: 1" in result_text
     assert "Notes needing index: 1" in result_text
+
+
+async def test_vault_status_reports_git_last_commit_for_a_real_repo(
+    conn: aiosqlite.Connection, vault_dir: Path, patched_runtime: AthenaConfig
+) -> None:
+    init_repo(vault_dir)
+    (vault_dir / "a.md").write_text("a\n", encoding="utf-8")
+    commit_all(vault_dir, "initial commit")
+
+    result_text = await read_tools.vault_status()
+
+    assert "Git last commit:" in result_text
+    assert "initial commit" in result_text
+
+
+async def test_vault_status_works_without_a_configured_vault(
+    conn: aiosqlite.Connection, patched_runtime: AthenaConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _raise() -> None:
+        raise RuntimeError("ATHENA_VAULT_DIR is not set")
+
+    monkeypatch.setattr(_runtime, "require_vault_root", _raise)
+
+    result_text = await read_tools.vault_status()
+
+    assert "Total active notes: 0" in result_text
+    assert "Git commits ahead of upstream: not available" in result_text
+    assert "Git last commit: not available" in result_text
 
 
 # --- system_diagnostics ------------------------------------------------------

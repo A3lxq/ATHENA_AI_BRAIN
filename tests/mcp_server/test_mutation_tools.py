@@ -7,9 +7,11 @@ import aiosqlite
 import pytest
 from mcp.server.mcpserver import AcceptedElicitation, CancelledElicitation, DeclinedElicitation
 from qdrant_client import QdrantClient
+from tests.git.conftest import commit_all, init_repo
 
 from athena.db.repository import duplicates as duplicates_repo
 from athena.db.repository import notes as notes_repo
+from athena.git.read import get_log
 from athena.mcp_server import _runtime, mutation_tools
 from athena.safety.paths import VaultRoot
 
@@ -62,6 +64,10 @@ def _patch_runtime(
         secret_scanner_block_on_high_confidence=False,
         qdrant_url="http://127.0.0.1:1",
         log_level="INFO",
+        git_auto_commit_enabled=True,
+        git_auto_push_enabled=False,
+        git_push_interval_minutes=60,
+        git_command_timeout_s=5.0,
     )
     monkeypatch.setattr(_runtime, "config", config)
     monkeypatch.setattr(_runtime, "require_vault_root", lambda: vault_root)
@@ -253,3 +259,134 @@ async def test_note_merge_with_correct_confirmation_merges(
     assert "merged" in result
     merged_text = (vault_dir / "keep.md").read_text(encoding="utf-8")
     assert "wordFIVE" in merged_text
+
+
+# --- auto-commit wiring (docs/design/git-automation.md §2.4) --------------
+
+
+async def test_note_update_auto_commits_when_vault_is_a_git_repo(
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot
+) -> None:
+    init_repo(vault_dir)
+    _write(vault_dir, "a.md", "original content")
+    await _make_note(conn, "a.md")
+    await conn.close()
+
+    ctx = _FakeElicitContext(CancelledElicitation())
+    result = await mutation_tools.note_update("a.md", "new appended text", ctx, mode="patch")
+
+    assert "updated" in result
+    log = await get_log(vault_root)
+    assert len(log) == 1
+    assert log[0].subject == "note_update:patch: a.md"
+
+
+async def test_note_link_auto_commits_when_vault_is_a_git_repo(
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot
+) -> None:
+    init_repo(vault_dir)
+    _write(vault_dir, "a.md", "original content")
+    await _make_note(conn, "a.md")
+    await conn.close()
+
+    result = await mutation_tools.note_link("a.md", "b")
+
+    assert "linked" in result
+    log = await get_log(vault_root)
+    assert len(log) == 1
+    assert log[0].subject == "note_link: a.md"
+
+
+async def test_note_delete_auto_commits_when_vault_is_a_git_repo(
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot
+) -> None:
+    init_repo(vault_dir)
+    _write(vault_dir, "a.md", "content")
+    # `a.md` must already be tracked/committed for `git add` on the
+    # now-deleted path to be recognized as a staged removal rather than
+    # failing with "pathspec did not match any files" -- a real gotcha
+    # found while writing this test, since `note_delete` unlinks the file
+    # from disk *before* `auto_commit_mutation` ever runs `git add`.
+    commit_all(vault_dir, "initial commit")
+    await _make_note(conn, "a.md")
+
+    ctx = _FakeElicitContext(
+        AcceptedElicitation(data=mutation_tools.ConfirmDeleteNote(confirm_path="a.md"))
+    )
+    result = await mutation_tools.note_delete("a.md", ctx)
+
+    assert "deleted" in result
+    await conn.close()
+    log = await get_log(vault_root)
+    assert len(log) == 2
+    assert log[0].subject == "note_delete: a.md"
+
+
+async def test_note_merge_auto_commits_when_vault_is_a_git_repo(
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot
+) -> None:
+    init_repo(vault_dir)
+    shared_text = " ".join(f"word{i}" for i in range(50))
+    _write(vault_dir, "keep.md", shared_text)
+    _write(vault_dir, "absorb.md", shared_text.replace("word5", "wordFIVE"))
+    keep_id = await _make_note(conn, "keep.md", content_hash="hk")
+    absorb_id = await _make_note(conn, "absorb.md", content_hash="ha")
+    candidate_id = await duplicates_repo.upsert_candidate(
+        conn, note_a_id=keep_id, note_b_id=absorb_id, detection_method="minhash_lsh",
+        lexical_score=0.8, semantic_score=None, metadata_match_score=None,
+        combined_score=0.8, detected_at="t0",
+    )
+    await duplicates_repo.update_resolution(
+        conn, candidate_id, status="confirmed", resolved_at="t1", resolved_by="user"
+    )
+    await conn.close()
+
+    ctx = _FakeElicitContext(
+        AcceptedElicitation(data=mutation_tools.ConfirmMergeNotes(confirm_keep_path="keep.md"))
+    )
+    result = await mutation_tools.note_merge(candidate_id, "keep.md", ctx)
+
+    assert "merged" in result
+    log = await get_log(vault_root)
+    assert len(log) == 1
+    assert log[0].subject == "note_merge: keep.md"
+
+
+async def test_note_update_succeeds_when_auto_commit_disabled_even_in_a_git_repo(
+    conn: aiosqlite.Connection,
+    vault_dir: Path,
+    vault_root: VaultRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    init_repo(vault_dir)
+    _write(vault_dir, "a.md", "original content")
+    await _make_note(conn, "a.md")
+    await conn.close()
+
+    from athena.config import AthenaConfig
+
+    disabled_config = AthenaConfig(
+        vault_root=str(vault_root.path),
+        data_dir=tmp_path,
+        db_path=tmp_path / "athena.db",
+        huey_db_path=tmp_path / "huey.db",
+        huey_serializer_secret="test-secret",  # noqa: S106 -- test fixture
+        secret_scanner_block_on_high_confidence=False,
+        qdrant_url="http://127.0.0.1:1",
+        log_level="INFO",
+        git_auto_commit_enabled=False,
+        git_auto_push_enabled=False,
+        git_push_interval_minutes=60,
+        git_command_timeout_s=5.0,
+    )
+    monkeypatch.setattr(_runtime, "config", disabled_config)
+
+    ctx = _FakeElicitContext(CancelledElicitation())
+    result = await mutation_tools.note_update("a.md", "new appended text", ctx, mode="patch")
+
+    assert "updated" in result
+    body = (vault_dir / "a.md").read_text(encoding="utf-8")
+    assert "new appended text" in body
+    log = await get_log(vault_root)
+    assert log == []

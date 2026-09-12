@@ -37,6 +37,10 @@ class AthenaConfig:
     secret_scanner_block_on_high_confidence: bool
     qdrant_url: str
     log_level: str
+    git_auto_commit_enabled: bool
+    git_auto_push_enabled: bool
+    git_push_interval_minutes: int
+    git_command_timeout_s: float
 
     @property
     def vault_root_configured(self) -> bool:
@@ -55,6 +59,16 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    return int(raw) if raw else default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    return float(raw) if raw else default
+
+
 def load_config() -> AthenaConfig:
     """Load configuration from the environment.
 
@@ -69,6 +83,15 @@ def load_config() -> AthenaConfig:
       ATHENA_QDRANT_URL                 -- Qdrant server URL (default: http://127.0.0.1:6333,
                                               matching ADR-0006's 127.0.0.1-only binding)
       ATHENA_LOG_LEVEL                  -- Python logging level name (default: INFO)
+      ATHENA_GIT_AUTO_COMMIT            -- "false" to disable auto-committing vault mutations
+                                              (default: true, per docs/GIT_WORKFLOW.md -- local-only
+                                              and non-destructive, so safe to default on)
+      ATHENA_GIT_AUTO_PUSH              -- "true" to enable the periodic auto-push job (default:
+                                              false -- push touches an external system, per
+                                              docs/GIT_WORKFLOW.md's conservative default)
+      ATHENA_GIT_PUSH_INTERVAL_MINUTES  -- periodic auto-push cadence in minutes (default: 60)
+      ATHENA_GIT_COMMAND_TIMEOUT_S      -- per-subprocess `git` call timeout in seconds
+                                              (default: 30.0; `push` uses max(this, 60.0))
     """
     data_dir = _env_path("ATHENA_DATA_DIR") or DEFAULT_DATA_DIR
     return AthenaConfig(
@@ -82,4 +105,8 @@ def load_config() -> AthenaConfig:
         ),
         qdrant_url=os.environ.get("ATHENA_QDRANT_URL", "http://127.0.0.1:6333"),
         log_level=os.environ.get("ATHENA_LOG_LEVEL", "INFO"),
+        git_auto_commit_enabled=_env_bool("ATHENA_GIT_AUTO_COMMIT", default=True),
+        git_auto_push_enabled=_env_bool("ATHENA_GIT_AUTO_PUSH", default=False),
+        git_push_interval_minutes=_env_int("ATHENA_GIT_PUSH_INTERVAL_MINUTES", default=60),
+        git_command_timeout_s=_env_float("ATHENA_GIT_COMMAND_TIMEOUT_S", default=30.0),
     )

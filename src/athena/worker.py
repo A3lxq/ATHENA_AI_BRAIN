@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -30,6 +31,7 @@ from athena.config import AthenaConfig, load_config
 from athena.db.connection import open_connection
 from athena.db.repository import duplicates as duplicates_repo
 from athena.db.repository import events as events_repo
+from athena.db.repository import research_jobs as research_jobs_repo
 from athena.hardening.permissions import ensure_private_dir
 from athena.hardening.serializer import SerializerMisconfigured, assert_safe_job_serializer
 from athena.indexing.index_note import IndexBootstrapSummary, index_bootstrap, index_note
@@ -40,6 +42,7 @@ from athena.intelligence.lifecycle import run_stale_sweep as _run_stale_sweep
 from athena.intelligence.merge import MergeResult, merge_notes
 from athena.intelligence.merge import list_pending_duplicates as _list_pending_duplicates
 from athena.intelligence.merge import resolve_duplicate as _resolve_duplicate
+from athena.research.workflow import CommitResult, ResearchDraft, commit_draft, run_research
 from athena.retrieval.evaluation import (
     DEFAULT_CORPUS_DIR,
     EvaluationReport,
@@ -63,9 +66,14 @@ __all__ = [
     "stale_sweep_task",
     "duplicates_scan_task",
     "reindex_task",
+    "research_task",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 def build_huey(config: AthenaConfig) -> SqliteHuey:
@@ -480,6 +488,105 @@ def reindex_task(note_id: int | None, correlation_id: str) -> None:
                 )
 
     asyncio.run(_run())
+
+
+@huey.task(  # type: ignore[untyped-decorator]  # huey ships no py.typed
+    context=True, retries=3, retry_delay=10
+)
+def research_task(urls: list[str], topic: str, correlation_id: str, task: object = None) -> None:
+    """MCP `research_start` tool's task-backed counterpart (design doc
+    §2.4). Unlike `duplicates_scan_task`/`reindex_task`, this task DOES
+    touch `research_jobs` itself: the draft it produces is per-job state
+    only this task ever computes, so it cannot be left for the dispatching
+    MCP tool call to record up front the way `job_type`/`query` are.
+
+    `job_id` is deliberately not a parameter -- it isn't known until after
+    dispatch returns a huey task id and the MCP tool layer inserts the
+    `research_jobs` row keyed to it (mirroring `duplicates_scan`/
+    `reindex_start`'s existing insert-after-dispatch order). Instead,
+    `context=True` injects this task's own `Task` instance as `task`, and
+    `task.id` is looked up against `research_jobs.huey_task_id` at
+    execution time. If the row hasn't been inserted yet (the dispatching
+    call is still mid-flight when a fast worker picks this up), this raises
+    -- caught by huey's own `retries=3, retry_delay=10`, giving the
+    dispatcher's own fast, synchronous insert plenty of time to land before
+    the retry.
+
+    Never writes to the vault -- only `commit_draft` does that, and only
+    after an explicit `research_commit` call with a confirmed, non-dry-run
+    request.
+    """
+    huey_task_id = task.id  # type: ignore[attr-defined]  # injected by context=True
+
+    async def _find_job_id() -> int:
+        async with open_connection(_config.db_path) as conn:
+            job = await research_jobs_repo.get_by_huey_task_id(conn, huey_task_id)
+            if job is None:
+                raise RuntimeError(
+                    f"no research_jobs row for huey_task_id={huey_task_id!r} yet "
+                    "-- retrying"
+                )
+            return job.id
+
+    job_id = asyncio.run(_find_job_id())
+
+    draft: ResearchDraft = run_research(urls, topic)
+
+    async def _record() -> None:
+        async with open_connection(_config.db_path) as conn:
+            await research_jobs_repo.record_draft(
+                conn,
+                job_id,
+                draft_title=draft.title,
+                draft_body=draft.body,
+                draft_source_urls=draft.succeeded_urls,
+            )
+            await research_jobs_repo.mark_finished(
+                conn, job_id, status="succeeded", finished_at=_now()
+            )
+
+    asyncio.run(_record())
+    logger.info(
+        "research_task(job_id=%s, correlation_id=%s) succeeded_urls=%d failed_urls=%d",
+        job_id,
+        correlation_id,
+        len(draft.succeeded_urls),
+        len(draft.failed_urls),
+    )
+
+
+def run_research_commit(
+    config: AthenaConfig | None = None,
+    *,
+    job_id: int,
+    dry_run: bool,
+    target_path: str | None = None,
+) -> CommitResult:
+    """Synchronous entry point for `athena research commit` -- requires a
+    reachable Qdrant client only when `dry_run=False` (a preview needs no
+    indexing), matching `run_index_bootstrap`'s "no meaningful metadata-only
+    mode" reasoning for the write path while a dry-run stays as cheap as
+    `job_status`."""
+    active_config = config or _config
+    vault_root = _require_vault_root(active_config)
+    qdrant_client = _get_qdrant_client(active_config) if not dry_run else QdrantClient(
+        url=active_config.qdrant_url
+    )
+
+    async def _run() -> CommitResult:
+        async with open_connection(active_config.db_path) as conn:
+            return await commit_draft(
+                conn,
+                qdrant_client,
+                vault_root,
+                job_id,
+                dry_run=dry_run,
+                target_path=target_path,
+                committed_by="cli",
+                block_on_high_confidence_secrets=active_config.secret_scanner_block_on_high_confidence,
+            )
+
+    return asyncio.run(_run())
 
 
 def start_watcher(config: AthenaConfig | None = None) -> VaultWatcher:

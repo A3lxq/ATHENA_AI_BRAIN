@@ -16,7 +16,14 @@ from mcp.server import MCPServer
 
 from athena import __version__
 from athena.logging_setup import configure_logging
-from athena.mcp_server import _runtime, job_tools, mutation_tools, read_tools, write_tools
+from athena.mcp_server import (
+    _runtime,
+    job_tools,
+    mutation_tools,
+    read_tools,
+    research_tools,
+    write_tools,
+)
 
 __all__ = ["build_server", "main"]
 
@@ -39,6 +46,7 @@ def build_server() -> MCPServer:
     job_tools.register(mcp)
     write_tools.register(mcp)
     mutation_tools.register(mcp)
+    research_tools.register(mcp)
     return mcp
 
 

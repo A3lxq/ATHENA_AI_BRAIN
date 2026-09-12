@@ -237,3 +237,111 @@ def test_run_stale_sweep_against_configured_vault(
     # 'active'/'verified' yet, so this run has nothing to flag -- the point
     # of this test is that the wiring runs end-to-end without error.
     assert summary.notes_flagged == 0
+
+
+def test_research_task_call_local_records_a_draft_and_marks_the_job_succeeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`context=True`'s injected `task` kwarg is only wired up by Huey's real
+    `execute()` path, not `call_local` (which calls the raw function
+    directly) -- so this test supplies a minimal stand-in with just the
+    `.id` attribute `research_task` actually reads, and pre-inserts the
+    `research_jobs` row `call_local`'s task would otherwise have to look
+    itself up by, exactly as a real dispatched job's row would already
+    exist by the time a real consumer picks it up."""
+    from types import SimpleNamespace
+
+    from athena.db.connection import open_connection
+    from athena.db.repository import research_jobs as research_jobs_repo
+    from athena.research.workflow import ResearchDraft
+
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    worker = _fresh_worker_module(tmp_path, monkeypatch, vault_dir=vault_dir)
+
+    async def _insert() -> int:
+        async with open_connection(worker._config.db_path) as conn:
+            return await research_jobs_repo.insert(
+                conn, huey_task_id="fake-huey-id", job_type="research_start",
+                query="Topic", created_at="2026-09-10T00:00:00+00:00",
+            )
+
+    job_id = asyncio.run(_insert())
+
+    def fake_run_research(urls: list[str], topic: str) -> ResearchDraft:
+        return ResearchDraft(
+            title=topic, body="drafted body", succeeded_urls=urls, failed_urls=[]
+        )
+
+    monkeypatch.setattr(worker, "run_research", fake_run_research)
+
+    worker.research_task.call_local(
+        ["https://a.example/"], "Topic", "corr-1", task=SimpleNamespace(id="fake-huey-id")
+    )
+
+    async def _check() -> None:
+        async with open_connection(worker._config.db_path) as conn:
+            row = await research_jobs_repo.get_by_id(conn, job_id)
+            assert row is not None
+            assert row.draft_body == "drafted body"
+            assert row.draft_source_urls == ["https://a.example/"]
+            assert row.status == "succeeded"
+
+    asyncio.run(_check())
+
+
+def test_research_task_call_local_raises_if_its_job_row_does_not_exist_yet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The benign dispatch-then-insert race described in `research_task`'s
+    own docstring: if the `research_jobs` row isn't there yet, this must
+    raise (letting Huey's `retries=3, retry_delay=10` handle it), not
+    silently no-op."""
+    from types import SimpleNamespace
+
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    worker = _fresh_worker_module(tmp_path, monkeypatch, vault_dir=vault_dir)
+
+    with pytest.raises(RuntimeError, match="no research_jobs row"):
+        worker.research_task.call_local(
+            ["https://a.example/"], "Topic", "corr-1",
+            task=SimpleNamespace(id="no-such-huey-id"),
+        )
+
+
+def test_run_research_commit_dry_run_and_real_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from athena.db.connection import open_connection
+    from athena.db.repository import research_jobs as research_jobs_repo
+
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    worker = _fresh_worker_module(tmp_path, monkeypatch, vault_dir=vault_dir)
+
+    async def _insert() -> int:
+        async with open_connection(worker._config.db_path) as conn:
+            job_id = await research_jobs_repo.insert(
+                conn, huey_task_id="fake-huey-id-2", job_type="research_start",
+                query="CLI Topic", created_at="2026-09-10T00:00:00+00:00",
+            )
+            await research_jobs_repo.record_draft(
+                conn, job_id, draft_title="CLI Topic", draft_body="cli body",
+                draft_source_urls=["https://a.example/"],
+            )
+            await research_jobs_repo.mark_finished(
+                conn, job_id, status="succeeded", finished_at="2026-09-10T00:01:00+00:00"
+            )
+            return job_id
+
+    job_id = asyncio.run(_insert())
+
+    preview = worker.run_research_commit(job_id=job_id, dry_run=True)
+    assert preview.note_id is None
+    assert preview.preview_body == "cli body"
+    assert list(vault_dir.rglob("*.md")) == []
+
+    result = worker.run_research_commit(job_id=job_id, dry_run=False)
+    assert result.note_id is not None
+    assert (vault_dir / "research" / "cli-topic.md").read_text(encoding="utf-8") == "cli body"

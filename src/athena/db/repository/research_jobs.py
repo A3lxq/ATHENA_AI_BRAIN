@@ -14,6 +14,7 @@ whether the worker process is running.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,7 +23,8 @@ import aiosqlite
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
 _COLUMNS = (
-    "id, huey_task_id, job_type, status, created_at, started_at, finished_at, error_message"
+    "id, huey_task_id, job_type, status, created_at, started_at, finished_at, error_message, "
+    "draft_title, draft_body, draft_source_urls"
 )
 
 
@@ -36,6 +38,9 @@ class ResearchJobRow:
     started_at: str | None
     finished_at: str | None
     error_message: str | None
+    draft_title: str | None
+    draft_body: str | None
+    draft_source_urls: list[str] | None
 
 
 def _row_to_job(row: Any) -> ResearchJobRow:
@@ -48,6 +53,9 @@ def _row_to_job(row: Any) -> ResearchJobRow:
         started_at=row[5],
         finished_at=row[6],
         error_message=row[7],
+        draft_title=row[8],
+        draft_body=row[9],
+        draft_source_urls=json.loads(row[10]) if row[10] is not None else None,
     )
 
 
@@ -101,10 +109,62 @@ async def mark_finished(
     await conn.commit()
 
 
+async def record_draft(
+    conn: aiosqlite.Connection,
+    job_id: int,
+    *,
+    draft_title: str,
+    draft_body: str,
+    draft_source_urls: list[str],
+) -> None:
+    """Store a completed `research_task`'s draft on its job row (design doc
+    §2.4) -- the draft lives here, keyed by `job_id`, until `research_commit`
+    reads it back. Does not itself change `status`/`finished_at`; the task
+    calls `mark_finished` separately, matching every other task's own
+    bookkeeping split."""
+    await conn.execute(
+        "UPDATE research_jobs SET draft_title = ?, draft_body = ?, draft_source_urls = ? "
+        "WHERE id = ?",
+        (draft_title, draft_body, json.dumps(draft_source_urls), job_id),
+    )
+    await conn.commit()
+
+
+async def record_result_note(conn: aiosqlite.Connection, job_id: int, note_id: int) -> None:
+    """Set `result_note_id` on an already-`succeeded` job, without touching
+    `status`/`finished_at`/`error_message` -- distinct from `mark_finished`,
+    which is the task-completion bookkeeping call and requires a terminal
+    status. `research_commit` calls this after `research_task` has already
+    completed the job; repurposing `mark_finished` here would need to
+    re-derive values it has no business re-deciding."""
+    await conn.execute(
+        "UPDATE research_jobs SET result_note_id = ? WHERE id = ?", (note_id, job_id)
+    )
+    await conn.commit()
+
+
 async def get_by_id(conn: aiosqlite.Connection, job_id: int) -> ResearchJobRow | None:
     cursor = await conn.execute(
         f"SELECT {_COLUMNS} FROM research_jobs WHERE id = ?",  # noqa: S608
         (job_id,),
+    )
+    row = await cursor.fetchone()
+    return _row_to_job(row) if row is not None else None
+
+
+async def get_by_huey_task_id(
+    conn: aiosqlite.Connection, huey_task_id: str
+) -> ResearchJobRow | None:
+    """`research_task` (design doc §2.4) is dispatched before its own
+    `research_jobs` row exists (the row's id isn't known until after
+    dispatch returns a huey task id, mirroring `duplicates_scan`/
+    `reindex_start`'s existing insert-after-dispatch order in
+    `athena.mcp_server.job_tools`) -- so the task looks itself up by its own
+    huey-assigned id (via `@huey.task(context=True)`'s injected `task.id`)
+    rather than being passed a `job_id` argument it cannot yet have."""
+    cursor = await conn.execute(
+        f"SELECT {_COLUMNS} FROM research_jobs WHERE huey_task_id = ?",  # noqa: S608
+        (huey_task_id,),
     )
     row = await cursor.fetchone()
     return _row_to_job(row) if row is not None else None

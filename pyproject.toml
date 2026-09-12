@@ -17,6 +17,12 @@ dependencies = [
     "qdrant-client>=1.16.0",
     "datasketch>=2.0.0",
     "mcp>=2.1.1",
+    "httpx>=0.28.1",
+    "trafilatura>=2.2.0",
+    # CVE-2026-41066 (lxml XXE, GHSA-vfmq-68hx-4jfw): trafilatura 2.2.0's own
+    # minimum (>=6.1.1) postdates the fix, but pin past it explicitly anyway
+    # -- same discipline applied to sentence-transformers/CVE-2026-68770.
+    "lxml>=6.1.3",
 ]
 
 [project.scripts]

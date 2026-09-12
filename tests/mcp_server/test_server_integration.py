@@ -77,7 +77,8 @@ async def test_list_tools_and_call_note_read_over_a_real_client_session(
             tool_names = {t.name for t in tools_result.tools}
             assert "note_read" in tool_names
             assert "note_delete" in tool_names
-            assert len(tool_names) == 17  # matches docs/design/mcp-server.md's tool count
+            # 17 (docs/design/mcp-server.md) + research_start/research_commit (Phase 7)
+            assert len(tool_names) == 19
 
             call_result = await session.call_tool("note_read", {"path": "a.md"})
             assert not call_result.is_error

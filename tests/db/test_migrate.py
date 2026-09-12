@@ -42,9 +42,9 @@ def test_discover_migrations_sorts_by_numeric_prefix(tmp_path: Path) -> None:
 async def test_apply_real_migrations_creates_full_schema(conn: aiosqlite.Connection) -> None:
     records = await apply_pending_migrations(conn, DEFAULT_MIGRATIONS_DIR)
 
-    assert [r.version for r in records] == [1, 2, 3, 4]
+    assert [r.version for r in records] == [1, 2, 3, 4, 5]
     cursor = await conn.execute("PRAGMA user_version")
-    assert (await cursor.fetchone())[0] == 4
+    assert (await cursor.fetchone())[0] == 5
 
     cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     table_names = {row[0] for row in await cursor.fetchall()}

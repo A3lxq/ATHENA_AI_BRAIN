@@ -180,6 +180,89 @@ async def test_mark_cancelled_sets_status_and_finished_at(conn: aiosqlite.Connec
     assert row.finished_at == "2026-08-28T00:01:00+00:00"
 
 
+async def test_record_draft_stores_title_body_and_source_urls(
+    conn: aiosqlite.Connection,
+) -> None:
+    job_id = await research_jobs.insert(
+        conn, huey_task_id="huey-task-draft-1", job_type="research_start",
+        created_at="2026-09-10T00:00:00+00:00",
+    )
+
+    await research_jobs.record_draft(
+        conn,
+        job_id,
+        draft_title="What is RAG?",
+        draft_body="## Source: https://a.example/\n\nsome content",
+        draft_source_urls=["https://a.example/", "https://b.example/"],
+    )
+
+    row = await research_jobs.get_by_id(conn, job_id)
+    assert row is not None
+    assert row.draft_title == "What is RAG?"
+    assert row.draft_body == "## Source: https://a.example/\n\nsome content"
+    assert row.draft_source_urls == ["https://a.example/", "https://b.example/"]
+
+
+async def test_get_by_id_returns_none_draft_fields_before_record_draft(
+    conn: aiosqlite.Connection,
+) -> None:
+    job_id = await research_jobs.insert(
+        conn, huey_task_id="huey-task-draft-2", job_type="research_start",
+        created_at="2026-09-10T00:00:00+00:00",
+    )
+
+    row = await research_jobs.get_by_id(conn, job_id)
+
+    assert row is not None
+    assert row.draft_title is None
+    assert row.draft_body is None
+    assert row.draft_source_urls is None
+
+
+async def test_record_result_note_sets_result_note_id_without_touching_status(
+    conn: aiosqlite.Connection,
+) -> None:
+    job_id = await research_jobs.insert(
+        conn, huey_task_id="huey-task-draft-3", job_type="research_start",
+        created_at="2026-09-10T00:00:00+00:00",
+    )
+    await research_jobs.mark_finished(
+        conn, job_id, status="succeeded", finished_at="2026-09-10T00:01:00+00:00"
+    )
+    note_id = await notes.insert(
+        conn, path="research/a.md", title="A", origin="web_research", provider=None,
+        folder="research", content_hash="h", created_at="2026-09-10T00:02:00+00:00",
+    )
+
+    await research_jobs.record_result_note(conn, job_id, note_id)
+
+    cursor = await conn.execute(
+        "SELECT status, finished_at, result_note_id FROM research_jobs WHERE id = ?", (job_id,)
+    )
+    row = await cursor.fetchone()
+    assert row == ("succeeded", "2026-09-10T00:01:00+00:00", note_id)
+
+
+async def test_get_by_huey_task_id_finds_the_row(conn: aiosqlite.Connection) -> None:
+    job_id = await research_jobs.insert(
+        conn, huey_task_id="huey-task-draft-4", job_type="research_start",
+        created_at="2026-09-10T00:00:00+00:00",
+    )
+
+    row = await research_jobs.get_by_huey_task_id(conn, "huey-task-draft-4")
+
+    assert row is not None
+    assert row.id == job_id
+
+
+async def test_get_by_huey_task_id_returns_none_for_unknown_task_id(
+    conn: aiosqlite.Connection,
+) -> None:
+    row = await research_jobs.get_by_huey_task_id(conn, "no-such-huey-task-id")
+
+    assert row is None
+
+
 async def test_count_by_status_groups_correctly(conn: aiosqlite.Connection) -> None:
     job_a = await research_jobs.insert(
         conn, huey_task_id="huey-task-9", job_type="ingestion",

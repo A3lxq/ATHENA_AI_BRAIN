@@ -226,6 +226,55 @@ def _cmd_lifecycle_stale_sweep(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_research_start(args: argparse.Namespace) -> int:
+    # athena.worker constructs a Huey instance at import time (same reason
+    # every other worker-dispatching command imports lazily here).
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    import athena.worker
+    from athena.db.connection import open_connection
+    from athena.db.repository import research_jobs as research_jobs_repo
+
+    config = load_config()
+    correlation_id = str(uuid4())
+    result = athena.worker.research_task(args.url, args.topic, correlation_id)
+
+    async def _insert() -> int:
+        async with open_connection(config.db_path) as conn:
+            return await research_jobs_repo.insert(
+                conn,
+                huey_task_id=result.id,
+                job_type="research_start",
+                query=args.topic,
+                created_at=datetime.now(UTC).isoformat(),
+            )
+
+    job_id = asyncio.run(_insert())
+    print(f"job dispatched: job_id={job_id}")
+    return 0
+
+
+def _cmd_research_commit(args: argparse.Namespace) -> int:
+    from athena.worker import run_research_commit
+
+    try:
+        result = run_research_commit(
+            job_id=args.job_id, dry_run=not args.commit, target_path=args.target_path
+        )
+    except ValueError as exc:
+        print(f"[FAIL] {exc}")
+        return 1
+
+    if not args.commit:
+        print(f"[dry run] title={result.preview_title!r}")
+        print(result.preview_body)
+        print("\nRe-run with --commit to actually write this note into the vault.")
+    else:
+        print(f"committed: note_id={result.note_id}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="athena", description="ATHENA AI-BRAIN CLI")
     parser.add_argument(
@@ -344,6 +393,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="days without an update before a note is flagged stale (default: 180)",
     )
     stale_sweep_parser.set_defaults(func=_cmd_lifecycle_stale_sweep)
+
+    research_parser = subparsers.add_parser("research", help="web research and ingestion")
+    research_subparsers = research_parser.add_subparsers(dest="research_command", required=True)
+
+    research_start_parser = research_subparsers.add_parser(
+        "start", help="dispatch a background web-research job"
+    )
+    research_start_parser.add_argument(
+        "--url",
+        dest="url",
+        action="append",
+        required=True,
+        help="a URL to fetch (repeatable)",
+    )
+    research_start_parser.add_argument("--topic", required=True, help="the research topic/title")
+    research_start_parser.set_defaults(func=_cmd_research_start)
+
+    research_commit_parser = research_subparsers.add_parser(
+        "commit", help="preview or write a completed research job's draft into the vault"
+    )
+    research_commit_parser.add_argument("job_id", type=int)
+    research_commit_parser.add_argument(
+        "--commit",
+        action="store_true",
+        help=(
+            "actually write the note into the vault (an explicit flag, not merely omitting "
+            "--dry-run -- the CLI has no elicitation mechanism to confirm otherwise)"
+        ),
+    )
+    research_commit_parser.add_argument(
+        "--target-path",
+        dest="target_path",
+        default=None,
+        help="vault-relative path for the new note (default: a slug of the topic under research/)",
+    )
+    research_commit_parser.set_defaults(func=_cmd_research_commit)
 
     return parser
 

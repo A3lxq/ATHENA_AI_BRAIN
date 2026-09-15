@@ -141,6 +141,33 @@ class TestSymlinks:
         with pytest.raises(SymlinkNotAllowedError):
             resolve_vault_path("linked-dir/note.md", vault_root, PathMode.EXISTING)
 
+    def test_permission_error_on_an_inaccessible_ancestor_does_not_crash(
+        self, monkeypatch: pytest.MonkeyPatch, vault_root: VaultRoot
+    ) -> None:
+        """`Path.is_symlink()` raises `PermissionError` for an inaccessible
+        ancestor component on Python <=3.12 (fixed to silently return False
+        on 3.13+'s `os.path.islink()`-based implementation) -- this real,
+        Python-version-dependent difference was found because this
+        project's own dev environment (3.14) masked it locally for four
+        phases, only surfacing in CI (pinned to 3.12) right before the v1.0
+        tag. `_check_no_symlinks_in_chain` must not let this propagate as
+        an unhandled crash regardless of which Python version runs it; the
+        downstream `resolve(strict=True)`-based escape checks handle the
+        actual rejection correctly either way.
+        """
+
+        def _raise_permission_error(self: Path) -> bool:
+            raise PermissionError(13, "Permission denied", str(self))
+
+        monkeypatch.setattr(Path, "is_symlink", _raise_permission_error)
+
+        with pytest.raises(PathEscapesVaultError):
+            resolve_vault_path(
+                "../../../../../../../root/.ssh/id_rsa",
+                vault_root,
+                PathMode.MAYBE_EXISTING,
+            )
+
 
 class TestExistingMode:
     def test_existing_file_resolves_successfully(self, vault_root: VaultRoot) -> None:

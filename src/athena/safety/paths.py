@@ -181,7 +181,26 @@ def _check_no_symlinks_in_chain(candidate: Path, vault_root: VaultRoot) -> None:
     current = vault_root.path
     for part in rel_parts:
         current = current / part
-        if current.is_symlink():
+        try:
+            is_symlink = current.is_symlink()
+        except OSError:
+            # An inaccessible ancestor (e.g. a traversal target under
+            # another user's home directory, like /root/.ssh on a
+            # non-root process) cannot be vouched for here either way --
+            # same reasoning as the `resolve(strict=True)` catches below.
+            # Do not raise: this module's `PathMode.EXISTING`/
+            # `MAYBE_EXISTING` branches' own `resolve(strict=True)` calls
+            # will independently hit the same inaccessible component and
+            # correctly refuse the path (as "not found" or via the
+            # CREATE-mode escape check), so silently continuing here is
+            # safe, not a bypass. Confirmed empirically: Python 3.12's
+            # `Path.is_symlink()` raises `PermissionError` for this case,
+            # while 3.13+'s `os.path.islink()`-based implementation
+            # already swallows it and returns False -- this except clause
+            # makes the module's actual behavior version-independent
+            # rather than accidentally depending on which Python runs it.
+            is_symlink = False
+        if is_symlink:
             raise SymlinkNotAllowedError(
                 f"symlink encountered in vault path chain: {current}"
             )

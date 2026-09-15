@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -279,3 +280,61 @@ async def test_count_by_status_groups_correctly(conn: aiosqlite.Connection) -> N
     counts = await research_jobs.count_by_status(conn)
 
     assert counts == {"queued": 1, "succeeded": 1}
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+async def test_count_dispatched_today_counts_only_todays_matching_job_type(
+    conn: aiosqlite.Connection,
+) -> None:
+    await research_jobs.insert(
+        conn, huey_task_id="today-1", job_type="research_start", created_at=_now()
+    )
+    await research_jobs.insert(
+        conn, huey_task_id="today-2", job_type="research_start", created_at=_now()
+    )
+    # A different job_type today -- must not be counted.
+    await research_jobs.insert(
+        conn, huey_task_id="today-other-type", job_type="reindex_start", created_at=_now()
+    )
+    # A matching job_type, but not today -- must not be counted.
+    await research_jobs.insert(
+        conn,
+        huey_task_id="yesterday",
+        job_type="research_start",
+        created_at="2020-01-01T00:00:00+00:00",
+    )
+
+    count = await research_jobs.count_dispatched_today(conn, job_type="research_start")
+
+    assert count == 2
+
+
+async def test_check_daily_dispatch_limit_allows_under_the_ceiling(
+    conn: aiosqlite.Connection,
+) -> None:
+    await research_jobs.insert(
+        conn, huey_task_id="t1", job_type="research_start", created_at=_now()
+    )
+
+    await research_jobs.check_daily_dispatch_limit(
+        conn, job_type="research_start", max_per_day=2
+    )  # must not raise
+
+
+async def test_check_daily_dispatch_limit_raises_at_the_ceiling(
+    conn: aiosqlite.Connection,
+) -> None:
+    await research_jobs.insert(
+        conn, huey_task_id="t1", job_type="research_start", created_at=_now()
+    )
+    await research_jobs.insert(
+        conn, huey_task_id="t2", job_type="research_start", created_at=_now()
+    )
+
+    with pytest.raises(research_jobs.DispatchLimitError, match="daily dispatch limit"):
+        await research_jobs.check_daily_dispatch_limit(
+            conn, job_type="research_start", max_per_day=2
+        )

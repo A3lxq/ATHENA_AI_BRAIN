@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 
 async def append_event(
@@ -53,3 +56,38 @@ async def append_event(
     )
     await conn.commit()
     return resolved_event_id
+
+
+async def record_vault_event(
+    conn: aiosqlite.Connection,
+    *,
+    event_type: str,
+    payload: dict[str, Any],
+    source: str = "mcp_tool_call",
+    correlation_id: str | None = None,
+) -> None:
+    """A never-raises wrapper around `append_event` for the semantic
+    `vault.*`/`dedup.*` events every mutating MCP tool now emits directly
+    (docs/design/production-hardening.md §2.1, closing the Repudiation gap
+    `docs/SECURITY_MODEL.md` flagged). Deliberately transport-agnostic --
+    lives in the repository layer, not `athena.mcp_server`, since
+    `athena.research.workflow.commit_draft` (called from both the MCP tool
+    and the CLI) needs it too, mirroring why `athena.git.write.
+    auto_commit_mutation` isn't `mcp_server`-scoped either (CLAUDE.md
+    rule 15).
+
+    An event-recording failure must never make the triggering mutation
+    appear to fail -- caught and logged here, exactly like
+    `auto_commit_mutation`'s own guarantee.
+    """
+    try:
+        await append_event(
+            conn,
+            event_type=event_type,
+            source=source,
+            correlation_id=correlation_id or str(uuid.uuid4()),
+            causation_id=None,
+            payload=payload,
+        )
+    except Exception:
+        logger.warning("failed to record %s event", event_type, exc_info=True)

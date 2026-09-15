@@ -50,6 +50,8 @@ class AthenaConfig:
     ollama_base_url: str
     llm_call_timeout_s: float
     llm_max_calls_per_day: int
+    research_max_dispatches_per_day: int
+    reindex_max_dispatches_per_day: int
 
     @property
     def vault_root_configured(self) -> bool:
@@ -117,6 +119,10 @@ def load_config() -> AthenaConfig:
       ATHENA_LLM_CALL_TIMEOUT_S         -- per-call LLM provider timeout in seconds (default: 30.0)
       ATHENA_LLM_MAX_CALLS_PER_DAY      -- daily LLM call ceiling, a simple cost-ceiling proxy per
                                               docs/SECURITY_MODEL.md action item 8 (default: 50)
+      ATHENA_RESEARCH_MAX_DISPATCHES_PER_DAY -- daily `research_start` dispatch ceiling, per
+                                              docs/design/production-hardening.md §2.2 (default: 50)
+      ATHENA_REINDEX_MAX_DISPATCHES_PER_DAY  -- daily `reindex_start` dispatch ceiling, same
+                                              rationale (default: 20)
     """
     data_dir = _env_path("ATHENA_DATA_DIR") or DEFAULT_DATA_DIR
     return AthenaConfig(
@@ -143,4 +149,10 @@ def load_config() -> AthenaConfig:
         ollama_base_url=os.environ.get("ATHENA_OLLAMA_BASE_URL", "http://localhost:11434"),
         llm_call_timeout_s=_env_float("ATHENA_LLM_CALL_TIMEOUT_S", default=30.0),
         llm_max_calls_per_day=_env_int("ATHENA_LLM_MAX_CALLS_PER_DAY", default=50),
+        research_max_dispatches_per_day=_env_int(
+            "ATHENA_RESEARCH_MAX_DISPATCHES_PER_DAY", default=50
+        ),
+        reindex_max_dispatches_per_day=_env_int(
+            "ATHENA_REINDEX_MAX_DISPATCHES_PER_DAY", default=20
+        ),
     )

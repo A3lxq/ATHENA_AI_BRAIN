@@ -49,7 +49,7 @@ Type=simple
 #      yet designed as an install-time step).
 #   2. `athena.worker` exists as a runnable module.
 # Update this ExecStart= line to the real, verified path before first use.
-ExecStart=%h/athena/.venv/bin/python -m athena.worker
+ExecStart=%h/.local/share/athena/.venv/bin/python -m athena.worker
 Restart=on-failure
 RestartSec=5
 

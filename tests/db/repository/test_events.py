@@ -142,6 +142,48 @@ async def test_append_event_with_sql_metacharacter_laden_actor_stored_literally(
     assert count_row[0] == 1
 
 
+async def test_record_vault_event_persists_with_defaults(conn: aiosqlite.Connection) -> None:
+    await events.record_vault_event(
+        conn,
+        event_type="vault.note_created",
+        payload={"path": "a.md", "note_id": 1},
+    )
+
+    cursor = await conn.execute(
+        "SELECT event_type, source, causation_id, payload_json FROM events "
+        "WHERE event_type = 'vault.note_created'"
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    event_type, source, causation_id, payload_json = row
+    assert event_type == "vault.note_created"
+    assert source == "mcp_tool_call"
+    assert causation_id is None
+    assert json.loads(payload_json) == {"path": "a.md", "note_id": 1}
+
+
+async def test_record_vault_event_accepts_an_explicit_source(conn: aiosqlite.Connection) -> None:
+    await events.record_vault_event(
+        conn,
+        event_type="vault.note_created",
+        payload={"path": "a.md"},
+        source="huey_job",
+    )
+
+    cursor = await conn.execute("SELECT source FROM events WHERE event_type = 'vault.note_created'")
+    row = await cursor.fetchone()
+    assert row == ("huey_job",)
+
+
+async def test_record_vault_event_never_raises_on_a_db_failure(
+    conn: aiosqlite.Connection,
+) -> None:
+    await conn.close()  # guarantee the next write fails
+
+    # Must not raise, matching auto_commit_mutation's identical guarantee.
+    await events.record_vault_event(conn, event_type="vault.note_created", payload={"path": "a.md"})
+
+
 async def test_two_calls_mint_distinct_event_ids(conn: aiosqlite.Connection) -> None:
     correlation_id = str(uuid.uuid4())
 

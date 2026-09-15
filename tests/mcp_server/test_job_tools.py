@@ -153,6 +153,32 @@ async def test_reindex_start_accepts_a_specific_note_id(worker: ModuleType) -> N
     assert "job dispatched" in response
 
 
+async def test_reindex_start_refuses_cleanly_at_the_daily_dispatch_ceiling(
+    worker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dataclasses
+
+    from athena.db.connection import open_connection
+    from athena.db.repository import research_jobs as research_jobs_repo
+
+    # AthenaConfig is a frozen dataclass -- swap in a replacement `_runtime.config`
+    # with the ceiling forced to 0, rather than mutating the existing instance.
+    monkeypatch.setattr(
+        _runtime, "config", dataclasses.replace(worker._config, reindex_max_dispatches_per_day=0)
+    )
+
+    async with open_connection(worker._config.db_path) as conn:
+        before = await research_jobs_repo.count_dispatched_today(conn, job_type="reindex_start")
+
+    response = await job_tools.reindex_start(note_id=None)
+
+    assert "daily dispatch limit" in response
+
+    async with open_connection(worker._config.db_path) as conn:
+        after = await research_jobs_repo.count_dispatched_today(conn, job_type="reindex_start")
+    assert after == before
+
+
 async def test_job_status_on_a_nonexistent_job_returns_a_clear_message_not_an_exception(
     worker: ModuleType,
 ) -> None:

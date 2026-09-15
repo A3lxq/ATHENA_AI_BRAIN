@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from qdrant_client import QdrantClient
 from tests.git.conftest import commit_all, init_repo
 
 from athena.db.repository import duplicates as duplicates_repo
+from athena.db.repository import events as events_repo
 from athena.db.repository import notes as notes_repo
 from athena.git.read import get_log
 from athena.mcp_server import _runtime, mutation_tools
@@ -77,6 +79,8 @@ def _patch_runtime(
         ollama_base_url="http://localhost:11434",
         llm_call_timeout_s=5.0,
         llm_max_calls_per_day=50,
+        research_max_dispatches_per_day=50,
+        reindex_max_dispatches_per_day=20,
     )
     monkeypatch.setattr(_runtime, "config", config)
     monkeypatch.setattr(_runtime, "require_vault_root", lambda: vault_root)
@@ -397,6 +401,8 @@ async def test_note_update_succeeds_when_auto_commit_disabled_even_in_a_git_repo
         ollama_base_url="http://localhost:11434",
         llm_call_timeout_s=5.0,
         llm_max_calls_per_day=50,
+        research_max_dispatches_per_day=50,
+        reindex_max_dispatches_per_day=20,
     )
     monkeypatch.setattr(_runtime, "config", disabled_config)
 
@@ -408,3 +414,136 @@ async def test_note_update_succeeds_when_auto_commit_disabled_even_in_a_git_repo
     assert "new appended text" in body
     log = await get_log(vault_root)
     assert log == []
+
+
+# --- vault.* event emission (docs/design/production-hardening.md §2.1) ----
+
+
+async def test_note_update_records_a_vault_note_modified_event(
+    conn: aiosqlite.Connection, vault_dir: Path
+) -> None:
+    _write(vault_dir, "a.md", "original content")
+    note_id = await _make_note(conn, "a.md")
+
+    ctx = _FakeElicitContext(CancelledElicitation())
+    result = await mutation_tools.note_update("a.md", "new appended text", ctx, mode="patch")
+
+    cursor = await conn.execute(
+        "SELECT event_type, payload_json FROM events WHERE event_type = 'vault.note_modified'"
+    )
+    row = await cursor.fetchone()
+    await conn.close()
+    assert row is not None
+    event_type, payload_json = row
+    payload = json.loads(payload_json)
+    assert event_type == "vault.note_modified"
+    assert payload["note_id"] == note_id
+    assert payload["path"] == "a.md"
+    assert payload["mode"] == "patch"
+    assert "updated" in result
+
+
+async def test_note_link_records_a_vault_note_modified_event(
+    conn: aiosqlite.Connection, vault_dir: Path
+) -> None:
+    _write(vault_dir, "a.md", "original content")
+    note_id = await _make_note(conn, "a.md")
+
+    result = await mutation_tools.note_link("a.md", "b")
+
+    cursor = await conn.execute(
+        "SELECT event_type, payload_json FROM events WHERE event_type = 'vault.note_modified'"
+    )
+    row = await cursor.fetchone()
+    await conn.close()
+    assert row is not None
+    event_type, payload_json = row
+    payload = json.loads(payload_json)
+    assert event_type == "vault.note_modified"
+    assert payload["note_id"] == note_id
+    assert payload["path"] == "a.md"
+    assert payload["mode"] == "link"
+    assert "linked" in result
+
+
+async def test_note_delete_records_a_vault_note_deleted_event(
+    conn: aiosqlite.Connection, vault_dir: Path
+) -> None:
+    _write(vault_dir, "a.md", "content")
+    note_id = await _make_note(conn, "a.md")
+
+    ctx = _FakeElicitContext(
+        AcceptedElicitation(data=mutation_tools.ConfirmDeleteNote(confirm_path="a.md"))
+    )
+    result = await mutation_tools.note_delete("a.md", ctx)
+
+    cursor = await conn.execute(
+        "SELECT event_type, payload_json FROM events WHERE event_type = 'vault.note_deleted'"
+    )
+    row = await cursor.fetchone()
+    await conn.close()
+    assert row is not None
+    event_type, payload_json = row
+    payload = json.loads(payload_json)
+    assert event_type == "vault.note_deleted"
+    assert payload["note_id"] == note_id
+    assert payload["path"] == "a.md"
+    assert "deleted" in result
+
+
+async def test_note_merge_records_a_dedup_merge_completed_event(
+    conn: aiosqlite.Connection, vault_dir: Path
+) -> None:
+    shared_text = " ".join(f"word{i}" for i in range(50))
+    _write(vault_dir, "keep.md", shared_text)
+    _write(vault_dir, "absorb.md", shared_text.replace("word5", "wordFIVE"))
+    keep_id = await _make_note(conn, "keep.md", content_hash="hk")
+    absorb_id = await _make_note(conn, "absorb.md", content_hash="ha")
+    candidate_id = await duplicates_repo.upsert_candidate(
+        conn, note_a_id=keep_id, note_b_id=absorb_id, detection_method="minhash_lsh",
+        lexical_score=0.8, semantic_score=None, metadata_match_score=None,
+        combined_score=0.8, detected_at="t0",
+    )
+    await duplicates_repo.update_resolution(
+        conn, candidate_id, status="confirmed", resolved_at="t1", resolved_by="user"
+    )
+
+    ctx = _FakeElicitContext(
+        AcceptedElicitation(data=mutation_tools.ConfirmMergeNotes(confirm_keep_path="keep.md"))
+    )
+    result = await mutation_tools.note_merge(candidate_id, "keep.md", ctx)
+
+    cursor = await conn.execute(
+        "SELECT event_type, payload_json FROM events WHERE event_type = 'dedup.merge_completed'"
+    )
+    row = await cursor.fetchone()
+    await conn.close()
+    assert row is not None
+    event_type, payload_json = row
+    payload = json.loads(payload_json)
+    assert event_type == "dedup.merge_completed"
+    assert payload["surviving_note_id"] == keep_id
+    assert payload["superseded_note_ids"] == [absorb_id]
+    assert payload["merge_policy_applied"] == "keep_and_absorb"
+    assert payload["dry_run"] is False
+    assert "merged" in result
+
+
+async def test_note_update_succeeds_unaffected_when_event_recording_fails(
+    conn: aiosqlite.Connection, vault_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _raise(*args: object, **kwargs: object) -> str:
+        raise RuntimeError("simulated events-table failure")
+
+    monkeypatch.setattr(events_repo, "append_event", _raise)
+
+    _write(vault_dir, "a.md", "original content")
+    await _make_note(conn, "a.md")
+    await conn.close()
+
+    ctx = _FakeElicitContext(CancelledElicitation())
+    result = await mutation_tools.note_update("a.md", "new appended text", ctx, mode="patch")
+
+    assert "updated" in result
+    body = (vault_dir / "a.md").read_text(encoding="utf-8")
+    assert "new appended text" in body

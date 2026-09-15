@@ -88,9 +88,18 @@ async def reindex_start(note_id: int | None = None) -> str:
     read-only (it has the side effect of enqueueing background work), but
     not destructive to vault content.
     """
-    correlation_id = str(uuid4())
-    result = athena.worker.reindex_task(note_id, correlation_id)
     async with open_connection(_runtime.config.db_path) as conn:
+        try:
+            await research_jobs_repo.check_daily_dispatch_limit(
+                conn,
+                job_type="reindex_start",
+                max_per_day=_runtime.config.reindex_max_dispatches_per_day,
+            )
+        except research_jobs_repo.DispatchLimitError as exc:
+            return str(exc)
+
+        correlation_id = str(uuid4())
+        result = athena.worker.reindex_task(note_id, correlation_id)
         job_id = await research_jobs_repo.insert(
             conn,
             huey_task_id=result.id,

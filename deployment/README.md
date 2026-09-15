@@ -1,9 +1,10 @@
 # ATHENA AI-BRAIN Deployment Artifacts
 
-Status: **Phase 1 configuration artifacts, not yet a fully working deployment.**
-Both files in this directory contain placeholders for components that do not
-exist yet (see "Open items" below). Read this whole file before using either
-artifact.
+Status: **Configuration artifacts, not yet a fully working deployment for a
+specific vault.** The venv/install-path placeholder both files used to
+contain is now resolved (§"Installing ATHENA AI-BRAIN itself" below); the
+vault-path placeholder in the systemd unit's `ReadWritePaths=` is still open
+(see "Open items" below). Read this whole file before using either artifact.
 
 Full design rationale, threat model, and test strategy for everything here:
 [`docs/design/os-level-process-sandboxing.md`](../docs/design/os-level-process-sandboxing.md).
@@ -28,6 +29,29 @@ worker is a genuine long-running daemon, which is exactly what `systemd
 identical — see the design doc §3.4 for why the directive blocks look so
 similar across the two files.
 
+## Installing ATHENA AI-BRAIN itself
+
+Both artifacts below assume ATHENA AI-BRAIN is installed at a fixed,
+documented path following the XDG Base Directory convention this project's
+own `athena.config.DEFAULT_DATA_DIR` already uses for runtime state
+(`~/.local/state/athena`): the venv and a checkout of the source live under
+`~/.local/share/athena`, XDG's directory for installed application data
+(deliberately a different XDG directory than `.local/state`, not a
+copy-paste of it). Do this once, before installing either the systemd unit
+or the bubblewrap script:
+
+```bash
+mkdir -p ~/.local/share/athena
+git clone https://github.com/A3lxq/ATHENA_AI_BRAIN.git ~/.local/share/athena/src
+cd ~/.local/share/athena/src
+python3 -m venv ~/.local/share/athena/.venv
+~/.local/share/athena/.venv/bin/pip install -e .
+```
+
+This is the real, resolved path both `athena-huey-worker.service`'s
+`ExecStart=` and `athena-mcp-launch.sh`'s `VENV` variable now point at (see
+"Open items" below).
+
 ## Installing the Huey worker systemd unit
 
 1. Copy the unit file into your user systemd directory:
@@ -37,9 +61,13 @@ similar across the two files.
    cp deployment/systemd/athena-huey-worker.service ~/.config/systemd/user/
    ```
 
-2. **Before enabling it**, edit the copied file's `ExecStart=` line — it
-   currently points at a placeholder path (see "Open items" below) that does
-   not exist. Do not enable this unit until that's fixed.
+2. **Before enabling it**, confirm the copied file's `ExecStart=` line
+   (`%h/.local/share/athena/.venv/bin/python -m athena.worker`) matches
+   where you actually installed ATHENA AI-BRAIN in the step above. The
+   venv-path placeholder this section used to warn about is now resolved
+   (see "Open items" below) — the vault-path placeholder in
+   `ReadWritePaths=` is a separate, still-open item and does still need
+   confirming before enabling.
 
 3. Reload and enable:
 
@@ -97,9 +125,10 @@ copy-paste snippet:
   must be passed explicitly via `--setenv` inside the script, not assumed to
   arrive from outside.
 - This project's own MCP server (`athena.mcp_server`, `python -m
-  athena.mcp_server`) now exists (Phase 6, docs/design/mcp-server.md) --
-  the venv/install-path placeholder in "Open items" below is the only
-  remaining blocker before this wiring can actually be enabled.
+  athena.mcp_server`) now exists (Phase 6, docs/design/mcp-server.md), and
+  the venv/install-path placeholder is now resolved (see "Open items"
+  below) — the remaining blocker before this wiring can be enabled for a
+  specific vault is confirming the vault path itself, not the install path.
 
 ## Required environment variables
 
@@ -115,17 +144,22 @@ above).
 
 ## Open items — placeholders that must be updated before real use
 
-**Neither artifact is deployment-ready yet**, though both entry points they
-launch now exist as real, tested code (`athena.worker` since Phase 2,
-`athena.mcp_server` since Phase 6). What's left is purely deployment
-placeholders, clearly marked with comments in the files themselves:
+Both entry points these artifacts launch now exist as real, tested code
+(`athena.worker` since Phase 2, `athena.mcp_server` since Phase 6). One of
+the two standing deployment placeholders is now resolved; the other is
+still genuinely open:
 
-1. **Venv/install path.** `athena-huey-worker.service`'s `ExecStart=` uses
-   `%h/athena/.venv/bin/python`, and `athena-mcp-launch.sh`'s `VENV`
-   variable uses `${HOME}/athena/.venv` — both are placeholders. This
-   project's actual virtualenv/install location has not been decided as of
-   this writing. Update both once it is.
-2. **Vault path placeholder.** The systemd unit's `ReadWritePaths=` uses
+1. **Venv/install path — RESOLVED.** `athena-huey-worker.service`'s
+   `ExecStart=` and `athena-mcp-launch.sh`'s `VENV` variable both now point
+   at `~/.local/share/athena/.venv` (`%h/.local/share/athena/.venv/bin/
+   python` in the systemd unit), a fixed, documented path following the XDG
+   Base Directory convention this project's own `athena.config.
+   DEFAULT_DATA_DIR` already uses for runtime state (`~/.local/state/
+   athena`) — `.local/share` is XDG's directory for installed application
+   data, deliberately distinct from `.local/state`. See "Installing ATHENA
+   AI-BRAIN itself" above for the install steps that create this path.
+2. **Vault path placeholder — still open.** The systemd unit's
+   `ReadWritePaths=` uses
    `%h/ObsidianVault` as a stand-in; confirm this against wherever the vault
    actually ends up living (per CLAUDE.md rule 13, the vault stays separate
    from ATHENA AI-BRAIN's own repo/install location) before enabling the unit.

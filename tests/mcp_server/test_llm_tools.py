@@ -42,6 +42,8 @@ def _config(tmp_path: Path, vault_root: VaultRoot, **overrides: object) -> Athen
         ollama_base_url="http://localhost:11434",  # the real default -- see test-level overrides
         llm_call_timeout_s=5.0,
         llm_max_calls_per_day=50,
+        research_max_dispatches_per_day=50,
+        reindex_max_dispatches_per_day=20,
     )
     defaults.update(overrides)
     return AthenaConfig(**defaults)  # type: ignore[arg-type]
@@ -154,6 +156,8 @@ async def test_note_summarize_call_limit_reached(
         llm_enabled=True,
         llm_default_provider="ollama",
         llm_max_calls_per_day=0,
+        research_max_dispatches_per_day=50,
+        reindex_max_dispatches_per_day=20,
     )
     _patch(monkeypatch, config, vault_root)
     monkeypatch.setattr(

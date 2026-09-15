@@ -1,0 +1,63 @@
+ATHENA AI-BRAIN Personal Use License
+
+Copyright (c) 2026 A3lxq
+
+This is a custom license, not a standard OSI-approved license. It is
+written in plain language to state the terms clearly; it has not been
+reviewed by a lawyer. If these terms need to hold up in a legal dispute,
+have an attorney review or redraft them before relying on this file.
+
+1. Grant of use
+
+   Permission is granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"),
+   to use, run, and modify the Software for personal, non-commercial
+   purposes only, subject to the conditions below.
+
+2. No commercial use
+
+   The Software, and any modified version of it, may not be used for any
+   commercial purpose, and may not be sold, sublicensed, or offered as
+   part of a paid product or service, without prior written permission
+   from the copyright holder.
+
+3. Modifications must be contributed back, or kept strictly private
+
+   If you modify the Software, you have exactly two options for what you
+   may do with that modified version:
+
+   a. Contribute it back. Submit your changes (for example, as a pull
+      request or patch) to this project's parent repository
+      (github.com/A3lxq/ATHENA_AI_BRAIN) for consideration. You do not
+      need your contribution to be accepted for this option to apply --
+      offering it back in good faith satisfies this term.
+
+   b. Keep it strictly private. Use your modified version yourself,
+      locally, for your own personal purposes, without distributing,
+      publishing, or otherwise sharing it -- including as a public or
+      private fork, a republished copy, or a component of anything else
+      you distribute -- to any other person or system.
+
+   What you may not do is publish, distribute, or share a modified
+   version of the Software with anyone else without first offering those
+   modifications back to the parent repository per (a). An independent
+   fork or redistribution of a modified version that has not been
+   offered back to the parent repository is not permitted under this
+   license.
+
+4. Preservation of this license
+
+   Any copy of the Software, modified or not, that you do distribute
+   under the terms of Section 3(a) above must include this license file
+   unmodified, along with a clear note of what you changed.
+
+5. No warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDER BE
+   LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN
+   ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.

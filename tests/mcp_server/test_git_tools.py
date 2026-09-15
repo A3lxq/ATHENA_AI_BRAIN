@@ -42,6 +42,8 @@ def _config(tmp_path: Path, vault_root: VaultRoot) -> AthenaConfig:
         ollama_base_url="http://localhost:11434",
         llm_call_timeout_s=5.0,
         llm_max_calls_per_day=50,
+        research_max_dispatches_per_day=50,
+        reindex_max_dispatches_per_day=20,
     )
 
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import aiosqlite
@@ -182,3 +183,41 @@ async def count_by_status(conn: aiosqlite.Connection) -> dict[str, int]:
     cursor = await conn.execute("SELECT status, COUNT(*) FROM research_jobs GROUP BY status")
     rows = await cursor.fetchall()
     return {row[0]: row[1] for row in rows}
+
+
+class DispatchLimitError(Exception):
+    """`job_type` has already reached its configured daily dispatch
+    ceiling (docs/design/production-hardening.md §2.2, generalizing
+    `athena.llm.summarize`'s identical daily-call-ceiling pattern from
+    Phase 9 to close `SECURITY_MODEL.md` TB-1's DoS-via-unbounded-
+    dispatch finding for `research_start`/`reindex_start`)."""
+
+
+async def count_dispatched_today(conn: aiosqlite.Connection, *, job_type: str) -> int:
+    today_prefix = datetime.now(UTC).strftime("%Y-%m-%d")
+    cursor = await conn.execute(
+        "SELECT COUNT(*) FROM research_jobs WHERE job_type = ? AND created_at LIKE ?",
+        (job_type, f"{today_prefix}%"),
+    )
+    row = await cursor.fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+async def check_daily_dispatch_limit(
+    conn: aiosqlite.Connection, *, job_type: str, max_per_day: int
+) -> None:
+    """Raises `DispatchLimitError` if `job_type` is already at its daily
+    ceiling -- called by dispatching tools/CLI commands **before**
+    enqueueing, so a refusal never itself contributes to the DoS surface
+    it guards against (the same "check before, not after" discipline
+    `athena.llm.summarize.summarize_text`'s call-ceiling check already
+    established). Deliberately transport-agnostic -- lives in the
+    repository layer so both the MCP tool (`research_tools.py`/
+    `job_tools.py`) and the CLI (`athena research start`, which dispatches
+    independently of the MCP tool layer) share exactly one check, never two
+    subtly-different ones.
+    """
+    if await count_dispatched_today(conn, job_type=job_type) >= max_per_day:
+        raise DispatchLimitError(
+            f"daily dispatch limit ({max_per_day}) reached for job_type={job_type!r}"
+        )

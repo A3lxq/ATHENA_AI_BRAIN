@@ -146,6 +146,32 @@ async def test_research_start_creates_a_research_job_row_and_returns_a_lookup_id
     assert row.status == "queued"
 
 
+async def test_research_start_refuses_cleanly_at_the_daily_dispatch_ceiling(
+    worker: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dataclasses
+
+    from athena.db.connection import open_connection
+    from athena.db.repository import research_jobs as research_jobs_repo
+
+    # AthenaConfig is a frozen dataclass -- swap in a replacement `_runtime.config`
+    # with the ceiling forced to 0, rather than mutating the existing instance.
+    monkeypatch.setattr(
+        _runtime, "config", dataclasses.replace(worker._config, research_max_dispatches_per_day=0)
+    )
+
+    async with open_connection(worker._config.db_path) as conn:
+        before = await research_jobs_repo.count_dispatched_today(conn, job_type="research_start")
+
+    response = await research_tools.research_start(["https://a.example/"], topic="Over Ceiling")
+
+    assert "daily dispatch limit" in response
+
+    async with open_connection(worker._config.db_path) as conn:
+        after = await research_jobs_repo.count_dispatched_today(conn, job_type="research_start")
+    assert after == before
+
+
 # --- research_commit: dry_run default and preview ----------------------
 
 
@@ -236,6 +262,37 @@ async def test_research_commit_non_dry_run_with_correct_confirmation_writes_the_
     assert (vault_dir / "research" / "confirmed-topic.md").read_text(
         encoding="utf-8"
     ) == "confirmed body"
+
+
+async def test_research_commit_records_a_vault_note_created_event(
+    worker: ModuleType,
+) -> None:
+    import json
+
+    from athena.db.connection import open_connection
+
+    job_id = await _make_completed_job(
+        worker, title="Eventful Topic", body="eventful body", urls=["https://a.example/"]
+    )
+
+    ctx = _FakeElicitContext(
+        AcceptedElicitation(
+            data=research_tools.ConfirmResearchCommit(confirm_topic="Eventful Topic")
+        )
+    )
+    response = await research_tools.research_commit(job_id, ctx, dry_run=False)
+    assert "committed" in response
+
+    async with open_connection(worker._config.db_path) as conn:
+        cursor = await conn.execute(
+            "SELECT payload_json FROM events WHERE event_type = 'vault.note_created'"
+        )
+        row = await cursor.fetchone()
+
+    assert row is not None
+    payload = json.loads(row[0])
+    assert payload["path"] == "research/eventful-topic.md"
+    assert "note_id" in payload
 
 
 def test_register_applies_tool_annotations() -> None:

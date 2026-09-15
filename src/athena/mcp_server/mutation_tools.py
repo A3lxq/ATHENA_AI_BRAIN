@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from athena.db.connection import open_connection
 from athena.db.repository import duplicates as duplicates_repo
+from athena.db.repository import events as events_repo
 from athena.db.repository import notes as notes_repo
 from athena.git.write import auto_commit_mutation
 from athena.intelligence.merge import merge_notes
@@ -128,6 +129,11 @@ async def note_update(
             enabled=_runtime.config.git_auto_commit_enabled,
             timeout_s=_runtime.config.git_command_timeout_s,
         )
+        await events_repo.record_vault_event(
+            conn,
+            event_type="vault.note_modified",
+            payload={"note_id": note.id, "path": path, "mode": mode},
+        )
         return f"updated {path!r} ({mode} mode)"
 
 
@@ -161,6 +167,11 @@ async def note_link(path: str, link_target: str, link_text: str | None = None) -
             detail=path,
             enabled=_runtime.config.git_auto_commit_enabled,
             timeout_s=_runtime.config.git_command_timeout_s,
+        )
+        await events_repo.record_vault_event(
+            conn,
+            event_type="vault.note_modified",
+            payload={"note_id": note.id, "path": path, "mode": "link"},
         )
         return f"linked {link_target!r} into {path!r}"
 
@@ -200,6 +211,11 @@ async def note_delete(path: str, ctx: Context) -> str:
             detail=path,
             enabled=_runtime.config.git_auto_commit_enabled,
             timeout_s=_runtime.config.git_command_timeout_s,
+        )
+        await events_repo.record_vault_event(
+            conn,
+            event_type="vault.note_deleted",
+            payload={"note_id": note.id, "path": path},
         )
         return f"deleted {path!r}"
 
@@ -255,6 +271,16 @@ async def note_merge(candidate_id: int, keep_path: str, ctx: Context) -> str:
             detail=keep_path,
             enabled=_runtime.config.git_auto_commit_enabled,
             timeout_s=_runtime.config.git_command_timeout_s,
+        )
+        await events_repo.record_vault_event(
+            conn,
+            event_type="dedup.merge_completed",
+            payload={
+                "surviving_note_id": merge_result.kept_note_id,
+                "superseded_note_ids": [merge_result.absorbed_note_id],
+                "merge_policy_applied": "keep_and_absorb",
+                "dry_run": False,
+            },
         )
         return (
             f"merged note_id={merge_result.absorbed_note_id} into "

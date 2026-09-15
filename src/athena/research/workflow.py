@@ -26,6 +26,7 @@ from pathlib import Path
 import aiosqlite
 from qdrant_client import QdrantClient
 
+from athena.db.repository import events as events_repo
 from athena.db.repository import notes as notes_repo
 from athena.db.repository import provenance as provenance_repo
 from athena.db.repository import research_jobs as research_jobs_repo
@@ -300,6 +301,11 @@ async def commit_draft(
         detail=vault_relative_path,
         enabled=git_auto_commit_enabled,
         timeout_s=git_command_timeout_s,
+    )
+    await events_repo.record_vault_event(
+        conn,
+        event_type="vault.note_created",
+        payload={"note_id": note_id, "path": vault_relative_path, "content_hash": content_hash},
     )
 
     return CommitResult(note_id=note_id, preview_title=title, preview_body=body)

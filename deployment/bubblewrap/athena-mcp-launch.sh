@@ -39,7 +39,7 @@ MODEL_CACHE="${HOME}/.cache/huggingface"
 # finalized (see docs/design/os-level-process-sandboxing.md "Open Questions
 # Carried Forward" — vault/venv path templating is not yet designed as an
 # install-time step). Update VENV to the real, verified path once it exists.
-VENV="${HOME}/athena/.venv"
+VENV="${HOME}/.local/share/athena/.venv"
 
 # `athena.mcp_server` (docs/design/mcp-server.md, Phase 6) now exists as a
 # real, tested `python -m athena.mcp_server` entry point. The VENV

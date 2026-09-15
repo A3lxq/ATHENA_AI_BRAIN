@@ -20,10 +20,12 @@ from athena.diagnostics import DoctorReport, run_doctor
 from athena.logging_setup import configure_logging
 
 if TYPE_CHECKING:
-    # Only for the `_require_vault_root_for_cli` helper's type annotations --
-    # this module's stated policy is lazy imports inside command functions
-    # for anything not needed by every subcommand, and TYPE_CHECKING-guarded
-    # imports never execute at runtime.
+    # Only for module-level helpers' type annotations (`_require_vault_root_
+    # for_cli`, `_init_bench_git_repo`) -- this module's stated policy is
+    # lazy imports inside command functions for anything not needed by every
+    # subcommand, and TYPE_CHECKING-guarded imports never execute at runtime.
+    from pathlib import Path
+
     from athena.config import AthenaConfig
     from athena.safety.paths import VaultRoot
 
@@ -236,16 +238,34 @@ def _cmd_lifecycle_stale_sweep(args: argparse.Namespace) -> int:
 
 
 def _cmd_research_start(args: argparse.Namespace) -> int:
-    # athena.worker constructs a Huey instance at import time (same reason
-    # every other worker-dispatching command imports lazily here).
     from datetime import UTC, datetime
     from uuid import uuid4
 
-    import athena.worker
     from athena.db.connection import open_connection
     from athena.db.repository import research_jobs as research_jobs_repo
 
     config = load_config()
+
+    async def _check_dispatch_limit() -> None:
+        async with open_connection(config.db_path) as conn:
+            await research_jobs_repo.check_daily_dispatch_limit(
+                conn,
+                job_type="research_start",
+                max_per_day=config.research_max_dispatches_per_day,
+            )
+
+    try:
+        asyncio.run(_check_dispatch_limit())
+    except research_jobs_repo.DispatchLimitError as exc:
+        print(f"[FAIL] {exc}")
+        return 1
+
+    # athena.worker constructs a Huey instance at import time (same reason
+    # every other worker-dispatching command imports lazily here) -- deferred
+    # until after the dispatch-limit check above passes, so a refused
+    # dispatch never requires a configured Huey secret either.
+    import athena.worker
+
     correlation_id = str(uuid4())
     result = athena.worker.research_task(args.url, args.topic, correlation_id)
 
@@ -487,6 +507,182 @@ def _cmd_llm_summarize(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_bench_index(_args: argparse.Namespace) -> int:
+    # A real ingest+index pass against the configured vault, reusing
+    # `athena.worker.run_bootstrap`/`run_index_bootstrap` exactly as
+    # `athena ingest bootstrap`/`athena index bootstrap` already do --
+    # imported lazily for the same ATHENA_HUEY_SECRET reason as those two
+    # commands. No `--corpus` flag: both functions only ever read
+    # `config.vault_root` (there is no parameter to redirect them at an
+    # arbitrary directory), so this benchmarks whatever `ATHENA_VAULT_DIR`
+    # is currently configured to, matching the design doc's §2.4 fallback
+    # ("simplify to always benchmark against the configured vault" when
+    # `--corpus` doesn't cleanly compose).
+    import time
+
+    start = time.perf_counter()
+    try:
+        # The import itself is inside this `try` -- not just the calls --
+        # because `athena.worker` hard-fails at import time if
+        # ATHENA_HUEY_SECRET is misconfigured (design doc §2.10); that must
+        # produce the same clean `[FAIL]` here as an unconfigured vault or
+        # an unreachable Qdrant, never a raw traceback (design doc §5's
+        # failure-mode table).
+        from athena.worker import run_bootstrap, run_index_bootstrap
+
+        bootstrap_summary = run_bootstrap()
+        index_summary = run_index_bootstrap()
+    except Exception as exc:
+        print(f"[FAIL] bench index run did not complete: {exc}")
+        return 1
+    duration_s = time.perf_counter() - start
+
+    notes_per_sec = index_summary.notes_indexed / duration_s if duration_s > 0 else 0.0
+
+    print("=== Index Benchmark ===")
+    print(
+        f"ingest: notes_ingested={bootstrap_summary.notes_ingested} "
+        f"notes_skipped={bootstrap_summary.notes_skipped} "
+        f"notes_failed={bootstrap_summary.notes_failed}"
+    )
+    print(
+        f"index: notes_indexed={index_summary.notes_indexed} "
+        f"notes_failed={index_summary.notes_failed}"
+    )
+    print(f"total_duration_s={duration_s:.3f}")
+    print(f"notes_per_sec={notes_per_sec:.2f}")
+    # "Report, don't gate" (design doc §2.4, matching `retrieval evaluate`'s
+    # own already-accepted philosophy): this only fails if the run itself
+    # didn't complete (the `except` above), never on the numbers produced.
+    return 0
+
+
+def _cmd_bench_retrieval(args: argparse.Namespace) -> int:
+    # A thin wrapper around `run_retrieval_evaluate` -- same --corpus
+    # handling as `_cmd_retrieval_evaluate`, no new measurement logic, just
+    # benchmark-oriented framing around the exact same figures.
+    from pathlib import Path
+
+    from athena.worker import run_retrieval_evaluate
+
+    corpus_dir = Path(args.corpus) if args.corpus else None
+    report = run_retrieval_evaluate(corpus_dir=corpus_dir)
+
+    print("=== Retrieval Benchmark ===")
+    print(f"questions: {report.num_questions} ({report.num_answerable} answerable)")
+    for k, value in report.recall_at_k.items():
+        print(f"recall@{k}: {value:.3f}")
+    for k, value in report.precision_at_k.items():
+        print(f"precision@{k}: {value:.3f}")
+    print(f"mrr: {report.mrr:.3f}")
+    print(f"ndcg@10: {report.ndcg_at_10:.3f}")
+    print(
+        "unanswerable_top1_false_positive_rate: "
+        f"{report.unanswerable_top1_false_positive_rate:.3f}"
+    )
+    print(f"latency p50={report.p50_latency_ms:.1f}ms p95={report.p95_latency_ms:.1f}ms")
+    return 0
+
+
+def _init_bench_git_repo(path: Path) -> None:
+    """Initialize a throwaway Git repository for `athena bench mutation`.
+
+    Deliberately duplicates `tests/git/conftest.py`'s `init_repo` fixture
+    (same `git init`/`git config user.name`/`git config user.email`
+    sequence) rather than importing it: this module ships as part of
+    `athena`'s installed package, and reaching into `tests/` from `src/` at
+    runtime would make a production CLI command depend on the test tree
+    being present on disk. Four duplicated lines here are cheaper than that
+    coupling.
+    """
+    import shutil
+    import subprocess
+
+    # A resolved, absolute path (not the bare "git" string) is passed to
+    # subprocess.run -- matching `athena.git.wrapper.run_git`'s own
+    # argument-list-only, never-shell discipline (ADR-0005). Every argument
+    # below is a fixed literal (no caller/network input reaches this list),
+    # the same false-positive shape this codebase already silences with an
+    # explicit `noqa` elsewhere (e.g. `athena.db.repository.notes`'s S608
+    # comments) rather than broadening a per-file ignore.
+    git_executable = shutil.which("git")
+    if git_executable is None:
+        raise RuntimeError("git executable not found on PATH")
+
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(  # noqa: S603 -- fixed argv, no shell, no untrusted input
+        [git_executable, "init", "-q", "-b", "main"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(  # noqa: S603 -- fixed argv, no shell, no untrusted input
+        [git_executable, "config", "user.name", "Athena Bench"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(  # noqa: S603 -- fixed argv, no shell, no untrusted input
+        [git_executable, "config", "user.email", "athena-bench@example.invalid"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _cmd_bench_mutation(args: argparse.Namespace) -> int:
+    # No existing command measures exactly this -- a real filesystem write
+    # + `athena.git.write.commit_paths` round trip (the same sequence
+    # `athena.mcp_server.write_tools.note_create` performs, minus the
+    # database bookkeeping, which isn't the thing worth timing here)
+    # against a real throwaway git-repo vault in a temp directory.
+    import tempfile
+    import time
+    from pathlib import Path
+
+    from athena.git.write import commit_paths
+    from athena.safety.paths import VaultRoot
+
+    if args.iterations < 1:
+        print("[FAIL] --iterations must be at least 1")
+        return 1
+
+    config = load_config()
+
+    async def _run(vault_dir: Path) -> list[float]:
+        vault_root = VaultRoot.initialize(vault_dir)
+        durations: list[float] = []
+        for i in range(args.iterations):
+            start = time.perf_counter()
+            rel_path = f"bench-note-{i:04d}.md"
+            (vault_dir / rel_path).write_text(f"bench note {i}\n", encoding="utf-8")
+            await commit_paths(
+                vault_root,
+                [rel_path],
+                f"bench: note {i}",
+                timeout_s=config.git_command_timeout_s,
+            )
+            durations.append(time.perf_counter() - start)
+        return durations
+
+    with tempfile.TemporaryDirectory(prefix="athena-bench-mutation-") as tmp_dir:
+        vault_dir = Path(tmp_dir) / "vault"
+        _init_bench_git_repo(vault_dir)
+        durations = asyncio.run(_run(vault_dir))
+
+    durations_ms = sorted(d * 1000 for d in durations)
+    mean_ms = sum(durations_ms) / len(durations_ms)
+    p95_ms = durations_ms[int(0.95 * len(durations_ms))]
+
+    print("=== Mutation Benchmark ===")
+    print(f"iterations={args.iterations}")
+    print(f"mean={mean_ms:.2f}ms p95={p95_ms:.2f}ms")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="athena", description="ATHENA AI-BRAIN CLI")
     parser.add_argument(
@@ -711,6 +907,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     llm_summarize_parser.add_argument("path", help="vault-relative path to the note")
     llm_summarize_parser.set_defaults(func=_cmd_llm_summarize)
+
+    bench_parser = subparsers.add_parser("bench", help="performance benchmarking commands")
+    bench_subparsers = bench_parser.add_subparsers(dest="bench_command", required=True)
+
+    bench_index_parser = bench_subparsers.add_parser(
+        "index", help="benchmark a full ingest+index pass against the configured vault"
+    )
+    bench_index_parser.set_defaults(func=_cmd_bench_index)
+
+    bench_retrieval_parser = bench_subparsers.add_parser(
+        "retrieval",
+        help="benchmark retrieval latency (thin wrapper around `retrieval evaluate`)",
+    )
+    bench_retrieval_parser.add_argument(
+        "--corpus",
+        default=None,
+        help=(
+            "path to a corpus directory containing questions.json "
+            "(default: the bundled starter corpus)"
+        ),
+    )
+    bench_retrieval_parser.set_defaults(func=_cmd_bench_retrieval)
+
+    bench_mutation_parser = bench_subparsers.add_parser(
+        "mutation",
+        help="benchmark a note-write -> auto-commit round trip against a throwaway vault",
+    )
+    bench_mutation_parser.add_argument(
+        "--iterations",
+        type=int,
+        default=20,
+        help="number of write+commit round trips to measure (default: 20)",
+    )
+    bench_mutation_parser.set_defaults(func=_cmd_bench_mutation)
 
     return parser
 

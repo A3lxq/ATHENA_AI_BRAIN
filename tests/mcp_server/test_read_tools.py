@@ -54,6 +54,8 @@ def patched_runtime(
         ollama_base_url="http://localhost:11434",
         llm_call_timeout_s=5.0,
         llm_max_calls_per_day=50,
+        research_max_dispatches_per_day=50,
+        reindex_max_dispatches_per_day=20,
     )
     monkeypatch.setattr(_runtime, "config", config)
     monkeypatch.setattr(_runtime, "get_qdrant_client", lambda: qdrant_client)

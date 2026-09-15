@@ -52,6 +52,7 @@ from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
 from athena.db.connection import open_connection
+from athena.db.repository import events as events_repo
 from athena.db.repository import notes as notes_repo
 from athena.git.write import auto_commit_mutation
 from athena.mcp_server import _runtime
@@ -137,6 +138,15 @@ async def note_create(path: str, content: str, title: str | None = None) -> str:
             enabled=_runtime.config.git_auto_commit_enabled,
             timeout_s=_runtime.config.git_command_timeout_s,
         )
+        await events_repo.record_vault_event(
+            conn,
+            event_type="vault.note_created",
+            payload={
+                "note_id": note_id,
+                "path": vault_relative_path,
+                "content_hash": content_hash,
+            },
+        )
 
     return f"note created: note_id={note_id} path={vault_relative_path!r}"
 
@@ -200,6 +210,15 @@ async def note_move(path: str, new_path: str) -> str:
             detail=f"{path!r} -> {new_vault_relative_path!r}",
             enabled=_runtime.config.git_auto_commit_enabled,
             timeout_s=_runtime.config.git_command_timeout_s,
+        )
+        await events_repo.record_vault_event(
+            conn,
+            event_type="vault.note_moved",
+            payload={
+                "note_id": note.id,
+                "old_path": path,
+                "new_path": new_vault_relative_path,
+            },
         )
 
     return f"note moved: note_id={note.id} path={new_vault_relative_path!r}"

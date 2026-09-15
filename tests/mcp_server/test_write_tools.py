@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import aiosqlite
@@ -7,6 +8,7 @@ import pytest
 from tests.git.conftest import init_repo
 
 from athena.config import AthenaConfig
+from athena.db.repository import events as events_repo
 from athena.db.repository import notes as notes_repo
 from athena.git.read import get_log
 from athena.mcp_server import _runtime, write_tools
@@ -43,6 +45,8 @@ def _patch_runtime(
         ollama_base_url="http://localhost:11434",
         llm_call_timeout_s=5.0,
         llm_max_calls_per_day=50,
+        research_max_dispatches_per_day=50,
+        reindex_max_dispatches_per_day=20,
     )
     monkeypatch.setattr(_runtime, "config", config)
     monkeypatch.setattr(_runtime, "require_vault_root", lambda: vault_root)
@@ -250,6 +254,8 @@ async def test_note_create_succeeds_when_auto_commit_disabled_even_in_a_git_repo
         ollama_base_url="http://localhost:11434",
         llm_call_timeout_s=5.0,
         llm_max_calls_per_day=50,
+        research_max_dispatches_per_day=50,
+        reindex_max_dispatches_per_day=20,
     )
     monkeypatch.setattr(_runtime, "config", disabled_config)
 
@@ -259,3 +265,64 @@ async def test_note_create_succeeds_when_auto_commit_disabled_even_in_a_git_repo
     assert (vault_dir / "no-commit.md").read_text(encoding="utf-8") == "content"
     log = await get_log(vault_root)
     assert log == []
+
+
+# --- vault.* event emission (docs/design/production-hardening.md §2.1) ----
+
+
+async def test_note_create_records_a_vault_note_created_event(
+    conn: aiosqlite.Connection,
+) -> None:
+    result = await write_tools.note_create("topic.md", "# Topic\n\nBody text.", title="Topic")
+    note = await notes_repo.get_by_path(conn, "topic.md")
+    assert note is not None
+
+    cursor = await conn.execute(
+        "SELECT event_type, payload_json FROM events WHERE event_type = 'vault.note_created'"
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    event_type, payload_json = row
+    payload = json.loads(payload_json)
+    assert event_type == "vault.note_created"
+    assert payload["note_id"] == note.id
+    assert payload["path"] == "topic.md"
+    assert payload["content_hash"] == note.content_hash
+    assert "note created" in result
+
+
+async def test_note_move_records_a_vault_note_moved_event(conn: aiosqlite.Connection) -> None:
+    await write_tools.note_create("old.md", "content to move")
+
+    result = await write_tools.note_move("old.md", "new.md")
+    moved = await notes_repo.get_by_path(conn, "new.md")
+    assert moved is not None
+
+    cursor = await conn.execute(
+        "SELECT event_type, payload_json FROM events WHERE event_type = 'vault.note_moved'"
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    event_type, payload_json = row
+    payload = json.loads(payload_json)
+    assert event_type == "vault.note_moved"
+    assert payload["note_id"] == moved.id
+    assert payload["old_path"] == "old.md"
+    assert payload["new_path"] == "new.md"
+    assert "note moved" in result
+
+
+async def test_note_create_succeeds_unaffected_when_event_recording_fails(
+    conn: aiosqlite.Connection, vault_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _raise(*args: object, **kwargs: object) -> str:
+        raise RuntimeError("simulated events-table failure")
+
+    monkeypatch.setattr(events_repo, "append_event", _raise)
+
+    result = await write_tools.note_create("no-event.md", "content")
+
+    assert "note created" in result
+    assert (vault_dir / "no-event.md").read_text(encoding="utf-8") == "content"
+    note = await notes_repo.get_by_path(conn, "no-event.md")
+    assert note is not None

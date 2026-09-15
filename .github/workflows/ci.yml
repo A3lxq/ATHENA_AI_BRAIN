@@ -1,0 +1,72 @@
+name: CI
+
+# Runs the three quality gates this project has run by hand every session
+# (ruff, mypy --strict, pytest) automatically on every push to main and on
+# every pull request, per docs/design/production-hardening.md §2.8.
+#
+# Deliberately a single Python 3.12 job, not a multi-version matrix -- this
+# project targets one specific, already-chosen runtime (pyproject.toml's
+# `requires-python = ">=3.12"`), not a published library needing broad
+# compatibility (see the design doc's §1/§6 for the explicit scope cut).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # A real Qdrant service container, pinned to the exact version this
+    # project's own `docker run` commands use every session (confirmed in
+    # docs/sessions/2026-09-10_docker-qdrant-resolution.md). Almost the
+    # entire test suite uses embedded `:memory:` Qdrant clients and needs
+    # nothing here, but a small number of tests (tests/indexing/
+    # test_qdrant_store.py, tests/retrieval/test_vector_search.py) hardcode
+    # `http://127.0.0.1:6333` and need a real server reachable there -- so
+    # no extra ATHENA_QDRANT_URL env var is needed, only the container
+    # itself, exposed on the host network's port 6333.
+    # No `options:` health-check is configured here: the Qdrant image does
+    # not ship a general-purpose shell health-check tool, so readiness is
+    # instead polled from the runner (the "Wait for Qdrant to be ready"
+    # step below) once the container's ports are mapped.
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.19.1
+        ports:
+          - 6333:6333
+          - 6334:6334
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project (with dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Wait for Qdrant to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:6333/healthz > /dev/null; then
+              echo "Qdrant is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Qdrant did not become ready in time" >&2
+          exit 1
+
+      - name: Lint (ruff)
+        run: ruff check src tests
+
+      - name: Type check (mypy)
+        run: mypy src
+
+      - name: Test (pytest)
+        run: pytest -q

@@ -30,9 +30,10 @@ exercised by Phase 10 itself.
    tested, and verified. Confirm both sections describe the code actually
    being released — not a stale prior phase.
 
-5. **Bump `pyproject.toml`'s `version` field.**
-   Currently `"0.1.0"`. Bump it to the new release version, following
-   semantic versioning (`MAJOR.MINOR.PATCH`).
+5. **Bump `pyproject.toml`'s `version` field, and `src/athena/__init__.py`'s
+   `__version__` alongside it (the two are not auto-synced).**
+   Bump both to the new release version, following semantic versioning
+   (`MAJOR.MINOR.PATCH`). As of the `v1.0.0` release, this is `"1.0.0"`.
 
 6. **Commit the version bump.**
    Include the `CHANGELOG.md` and `CURRENT_STATE.md` updates from steps 3-4

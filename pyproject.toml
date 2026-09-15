@@ -1,6 +1,6 @@
 [project]
 name = "athena"
-version = "0.1.0"
+version = "1.0.0"
 description = "Vendor-agnostic, event-driven AI Knowledge Operating System for an Obsidian vault"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -57,7 +57,7 @@ packages = ["src/athena"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 addopts = "-ra"
 asyncio_mode = "auto"
 

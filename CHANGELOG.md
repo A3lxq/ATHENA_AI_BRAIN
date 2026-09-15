@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## [1.0.0] - 2026-09-15
+
+A stable, documented, tested AI Knowledge Operating System — the full arc
+from Phase 0 (architecture/research/ADRs) through Phase 10 (production
+hardening), all implemented, tested, and verified. See `CURRENT_STATE.md`
+for the full narrative and `docs/sessions/` for a session-by-session
+record.
+
+### Fixed
+- **The test suite silently depended on `python -m pytest`'s cwd-on-`sys.path` behavior, not on any explicit pytest configuration** — invisible locally (every session's own verification ran via `python -m pytest`), but this project's own first-ever real CI run (triggered by Phase 10's push, itself a `pytest -q` invocation without the `-m` form) failed immediately at collection: 9 test modules doing `from tests.<pkg>.conftest import ...` (a pattern established in Phase 8 and reused since) raised `ModuleNotFoundError: No module named 'tests'`, because a bare `pytest` invocation never adds the working directory to `sys.path` the way `python -m pytest` implicitly does. Fixed by adding `"."` to `[tool.pytest.ini_options].pythonpath` in `pyproject.toml`, so the repo root is on `sys.path` for every invocation style, not just the one every session happened to use locally. Verified against the exact bare `pytest -q` invocation CI uses, not just re-confirmed via `python -m pytest`.
+
 ### Added
 - Ground-up Claude Code development pack.
 - Project operating instructions.

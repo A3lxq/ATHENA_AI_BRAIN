@@ -23,6 +23,13 @@ dependencies = [
     # minimum (>=6.1.1) postdates the fix, but pin past it explicitly anyway
     # -- same discipline applied to sentence-transformers/CVE-2026-68770.
     "lxml>=6.1.3",
+    # docs/design/multi-llm.md: official provider SDKs only -- litellm was
+    # re-evaluated and rejected again (a 2026 supply-chain compromise plus a
+    # sustained run of critical proxy CVEs through the year).
+    "openai>=3.13.0",
+    "anthropic>=1.5.0",
+    "google-genai>=2.23.0",
+    "ollama>=0.6.2",
 ]
 
 [project.scripts]

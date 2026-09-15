@@ -34,6 +34,15 @@ def _patch_runtime(
         git_auto_push_enabled=False,
         git_push_interval_minutes=60,
         git_command_timeout_s=5.0,
+        llm_enabled=False,
+        llm_default_provider=None,
+        llm_default_model=None,
+        openai_api_key=None,
+        anthropic_api_key=None,
+        google_api_key=None,
+        ollama_base_url="http://localhost:11434",
+        llm_call_timeout_s=5.0,
+        llm_max_calls_per_day=50,
     )
     monkeypatch.setattr(_runtime, "config", config)
     monkeypatch.setattr(_runtime, "require_vault_root", lambda: vault_root)
@@ -232,6 +241,15 @@ async def test_note_create_succeeds_when_auto_commit_disabled_even_in_a_git_repo
         git_auto_push_enabled=False,
         git_push_interval_minutes=60,
         git_command_timeout_s=5.0,
+        llm_enabled=False,
+        llm_default_provider=None,
+        llm_default_model=None,
+        openai_api_key=None,
+        anthropic_api_key=None,
+        google_api_key=None,
+        ollama_base_url="http://localhost:11434",
+        llm_call_timeout_s=5.0,
+        llm_max_calls_per_day=50,
     )
     monkeypatch.setattr(_runtime, "config", disabled_config)
 

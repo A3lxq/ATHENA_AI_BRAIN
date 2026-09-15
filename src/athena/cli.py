@@ -435,6 +435,58 @@ def _cmd_git_push(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_llm_summarize(args: argparse.Namespace) -> int:
+    # A direct athena.llm bridge, mirroring _cmd_git_status's own
+    # asyncio.run() bridge -- no Huey/worker.py involvement.
+    from athena.db.connection import open_connection
+    from athena.llm.provider import LLMProviderError, LLMTimeoutError
+    from athena.llm.summarize import (
+        LLMCallLimitError,
+        LLMDisabledError,
+        LLMNotConfiguredError,
+        summarize_text,
+    )
+    from athena.safety.content import parse_note_safely
+    from athena.safety.paths import PathMode, VaultPathError, resolve_vault_path
+
+    config = load_config()
+    vault_root = _require_vault_root_for_cli(config)
+    if vault_root is None:
+        return 1
+
+    try:
+        safe_path = resolve_vault_path(args.path, vault_root, PathMode.EXISTING)
+    except VaultPathError as exc:
+        print(f"[FAIL] cannot read vault note at {args.path!r}: {exc}")
+        return 1
+
+    raw_text = safe_path.path.read_text(encoding="utf-8")
+    vault_relative_path = safe_path.path.relative_to(vault_root.path).as_posix()
+    folder = vault_relative_path.rsplit("/", 1)[0] if "/" in vault_relative_path else ""
+    parsed = parse_note_safely(raw_text, folder_name=folder)
+
+    async def _run() -> str:
+        async with open_connection(config.db_path) as conn:
+            return await summarize_text(
+                conn, parsed.body, config=config, source_label=vault_relative_path
+            )
+
+    try:
+        summary = asyncio.run(_run())
+    except (LLMDisabledError, LLMNotConfiguredError, LLMCallLimitError) as exc:
+        print(f"[FAIL] {exc}")
+        return 1
+    except LLMTimeoutError as exc:
+        print(f"[FAIL] summarization timed out: {exc}")
+        return 1
+    except LLMProviderError as exc:
+        print(f"[FAIL] summarization failed: {exc}")
+        return 1
+
+    print(summary)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="athena", description="ATHENA AI-BRAIN CLI")
     parser.add_argument(
@@ -650,6 +702,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     git_push_parser.set_defaults(func=_cmd_git_push, push=False)
+
+    llm_parser = subparsers.add_parser("llm", help="LLM-backed commands")
+    llm_subparsers = llm_parser.add_subparsers(dest="llm_command", required=True)
+
+    llm_summarize_parser = llm_subparsers.add_parser(
+        "summarize", help="summarize a vault note via the configured default LLM provider"
+    )
+    llm_summarize_parser.add_argument("path", help="vault-relative path to the note")
+    llm_summarize_parser.set_defaults(func=_cmd_llm_summarize)
 
     return parser
 

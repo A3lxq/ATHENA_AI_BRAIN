@@ -41,6 +41,15 @@ class AthenaConfig:
     git_auto_push_enabled: bool
     git_push_interval_minutes: int
     git_command_timeout_s: float
+    llm_enabled: bool
+    llm_default_provider: str | None
+    llm_default_model: str | None
+    openai_api_key: str | None
+    anthropic_api_key: str | None
+    google_api_key: str | None
+    ollama_base_url: str
+    llm_call_timeout_s: float
+    llm_max_calls_per_day: int
 
     @property
     def vault_root_configured(self) -> bool:
@@ -92,6 +101,22 @@ def load_config() -> AthenaConfig:
       ATHENA_GIT_PUSH_INTERVAL_MINUTES  -- periodic auto-push cadence in minutes (default: 60)
       ATHENA_GIT_COMMAND_TIMEOUT_S      -- per-subprocess `git` call timeout in seconds
                                               (default: 30.0; `push` uses max(this, 60.0))
+      ATHENA_LLM_ENABLED                -- "true" to enable LLM-calling tools like
+                                              `note_summarize` (default: false -- an explicit
+                                              opt-in gate, per docs/design/multi-llm.md §1/§6,
+                                              resolving ADR-0007's standing open question)
+      ATHENA_LLM_PROVIDER               -- "openai"/"anthropic"/"google"/"ollama" (default: unset --
+                                              auto-selected only if exactly one provider below is
+                                              configured)
+      ATHENA_LLM_MODEL                  -- model name override for the selected provider (default:
+                                              unset -- each provider has its own built-in default)
+      ATHENA_OPENAI_API_KEY             -- OpenAI API key
+      ATHENA_ANTHROPIC_API_KEY          -- Anthropic API key
+      ATHENA_GOOGLE_API_KEY             -- Google (Gemini) API key
+      ATHENA_OLLAMA_BASE_URL            -- local Ollama server URL (default: http://localhost:11434)
+      ATHENA_LLM_CALL_TIMEOUT_S         -- per-call LLM provider timeout in seconds (default: 30.0)
+      ATHENA_LLM_MAX_CALLS_PER_DAY      -- daily LLM call ceiling, a simple cost-ceiling proxy per
+                                              docs/SECURITY_MODEL.md action item 8 (default: 50)
     """
     data_dir = _env_path("ATHENA_DATA_DIR") or DEFAULT_DATA_DIR
     return AthenaConfig(
@@ -109,4 +134,13 @@ def load_config() -> AthenaConfig:
         git_auto_push_enabled=_env_bool("ATHENA_GIT_AUTO_PUSH", default=False),
         git_push_interval_minutes=_env_int("ATHENA_GIT_PUSH_INTERVAL_MINUTES", default=60),
         git_command_timeout_s=_env_float("ATHENA_GIT_COMMAND_TIMEOUT_S", default=30.0),
+        llm_enabled=_env_bool("ATHENA_LLM_ENABLED", default=False),
+        llm_default_provider=os.environ.get("ATHENA_LLM_PROVIDER"),
+        llm_default_model=os.environ.get("ATHENA_LLM_MODEL"),
+        openai_api_key=os.environ.get("ATHENA_OPENAI_API_KEY"),
+        anthropic_api_key=os.environ.get("ATHENA_ANTHROPIC_API_KEY"),
+        google_api_key=os.environ.get("ATHENA_GOOGLE_API_KEY"),
+        ollama_base_url=os.environ.get("ATHENA_OLLAMA_BASE_URL", "http://localhost:11434"),
+        llm_call_timeout_s=_env_float("ATHENA_LLM_CALL_TIMEOUT_S", default=30.0),
+        llm_max_calls_per_day=_env_int("ATHENA_LLM_MAX_CALLS_PER_DAY", default=50),
     )

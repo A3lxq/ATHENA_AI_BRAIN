@@ -66,3 +66,44 @@ def test_duplicates_resolve_requires_confirm_or_reject() -> None:
 def test_duplicates_merge_requires_keep_flag() -> None:
     with pytest.raises(SystemExit):
         main(["duplicates", "merge", "1"])
+
+
+def test_llm_requires_a_subcommand() -> None:
+    with pytest.raises(SystemExit):
+        main(["llm"])
+
+
+def test_llm_summarize_without_a_configured_vault(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(["llm", "summarize", "a.md"])
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "ATHENA_VAULT_DIR is not set" in captured.out
+
+
+def test_llm_summarize_missing_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    monkeypatch.setenv("ATHENA_VAULT_DIR", str(vault_dir))
+
+    exit_code = main(["llm", "summarize", "does-not-exist.md"])
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "cannot read vault note" in captured.out
+
+
+def test_llm_summarize_disabled_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    (vault_dir / "a.md").write_text("some note content\n", encoding="utf-8")
+    monkeypatch.setenv("ATHENA_VAULT_DIR", str(vault_dir))
+
+    exit_code = main(["llm", "summarize", "a.md"])
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "disabled" in captured.out.lower()

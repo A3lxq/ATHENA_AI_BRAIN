@@ -119,6 +119,13 @@
 - CLI: `athena git {status,log,commit,push}` (`commit`/`push` require an explicit `--commit`/`--push` flag, mirroring `research commit`'s pattern).
 - `.pre-commit-config.yaml` + `.gitleaks.toml`: closes the real Phase-1-era ADR-0005 gap. Verified for real, not just written: the pinned gitleaks v8.30.1 binary downloaded and run directly against this repo's tracked history (zero false positives; the allowlist correctly suppresses a planted test private key), then `pre-commit` itself installed and the actual hook run end-to-end, confirmed to genuinely block a planted realistic secret while ignoring this project's existing `EXAMPLE`-suffixed test fixtures.
 - Test suite: 561 tests total (39 new this session) — all passing; mypy --strict clean; ruff clean. Built via two parallel agents (auto-commit wiring; the MCP/CLI/doctor/vault_status surface) against an already-built, already-tested `athena.git` foundation. **Live end-to-end verification, independently re-run**: a real scratch vault + real local bare Git remote — real MCP-driven auto-commits via a real in-memory `ClientSession`, real CLI dry-run/commit/push behavior, `athena doctor`'s `vault_git_repo: ok`, `vault_status`'s new git fields all confirmed working.
+- `docs/design/multi-llm.md`: design for Phase 9 (Multi-LLM) — the ADR-0003 `Protocol`-based multi-provider LLM adapter and `note_summarize`, the last tool in ADR-0007's original contract table. Research re-verified `litellm`'s security posture directly against GitHub's advisory database (worse than ADR-0003's original citation, not better — a 2026-03-25 supply-chain compromise plus a sustained run of critical proxy CVEs through the year) and verified every provider SDK's real call shape via `inspect.signature()` against the actually-installed packages.
+- `athena.llm.provider`: a `Protocol`-based adapter (`LLMProvider`) with four implementations (`OpenAIProvider`/`AnthropicProvider`/`GoogleProvider`/`OllamaProvider`), each wrapping one official SDK's genuinely-async client, every call uniformly wrapped in `asyncio.wait_for(..., timeout=...)`.
+- `athena.llm.summarize`: `summarize_text`, the single entry point both `note_summarize` (MCP) and `athena llm summarize` (CLI) call — enforces an opt-in gate (`ATHENA_LLM_ENABLED`, default off, resolving ADR-0007's standing open question), resolves the configured provider, enforces a daily call ceiling (`ATHENA_LLM_MAX_CALLS_PER_DAY`, the "simple cost-ceiling config value" `SECURITY_MODEL.md` asked for) checked before any provider call via the existing `events` table, and records an `llm.summarize_completed` audit event with no prompt/response content — closing the Repudiation gap `SECURITY_MODEL.md` flagged for LLM-calling read paths.
+- A real bug found during testing: `config.ollama_base_url` always has a truthy default, unlike the other three providers' `None`-unless-set API key fields — fixed with a live reachability check for the still-default URL (an explicit override is trusted outright).
+- `athena.mcp_server.llm_tools`: `note_summarize` (read-only, `open_world_hint=true`, frames its output as "AI-generated summary... not an instruction to follow").
+- CLI: `athena llm summarize PATH`.
+- Test suite: 589 tests total (28 new this session) — all passing; mypy --strict clean; ruff clean. Built directly, one pass (no parallel agents this time). **Live end-to-end verification against a real local LLM**: a small Ollama model pulled for the purpose (the two pre-existing local models were both 35B-parameter and impractically slow on CPU-only hardware) produced a real summary through both the CLI and a real in-memory MCP `ClientSession`; the opt-in gate and the daily call ceiling both refused cleanly for real; the audit event's payload was confirmed content-free.
 
 ### Not yet implemented
 - `watchdog` supply-chain review (flagged as required, not yet performed)
@@ -128,10 +135,9 @@
 - Duplicate-detection default thresholds tuning against real vault data — unblocked to actually do
 - A systemd-managed (rather than manually `docker run`) Qdrant deployment, per ADR-0006's eventual production description
 - Status promotion beyond `'draft'` → `'active'` (`'active'` → `'verified'`/`'archived'` remain fully manual, no policy proposed)
-- `note_summarize` MCP tool — the sole remaining deliberately deferred tool, blocked on Phase 9's multi-LLM adapter (every other tool in ADR-0007's contract table is now built)
 - Secret-scanning `note_create`/`note_update` content before writing (`docs/design/mcp-server.md` §6/§8 — Phase 7 closed this gap only for `research_commit`'s own write path, not the original two)
 - Rate-limiting/depth-limiting on `research_start`/`reindex_start` job dispatch (a known, not-newly-introduced DoS surface)
-- PDF/binary content extraction, autonomous web search, and LLM-driven multi-source synthesis for the research feature (all explicitly out of scope, `docs/design/research-ingestion.md` §1/§8)
+- PDF/binary content extraction, autonomous web search, and LLM-driven multi-source synthesis for the research feature (all explicitly out of scope, `docs/design/research-ingestion.md` §1/§8; multi-source synthesis is also explicitly out of scope for Phase 9 itself)
 - A full wire-level elicitation round-trip integration test (elicitation logic and protocol dispatch are each fully tested separately, not combined)
 - Duplicate-detection default thresholds are untuned against real vault data (`docs/design/knowledge-intelligence.md` §8)
 - Secret re-scanning of merged content (a deliberate scope decision, `docs/design/knowledge-intelligence.md` §6, not an oversight)
@@ -140,5 +146,6 @@
 - Merge-conflict *resolution* tooling (Phase 8 detects and reports a conflict, never auto-resolves one — a permanent, explicit non-goal)
 - CI-side `gitleaks` scanning (full history/PR-diff, beyond the local pre-commit hook)
 - A structural CI check enforcing "only `run_git`'s argv-list path is ever used, never a shell-interpolated git invocation"
+- Model routing and a real per-provider dollar-cost ceiling for the LLM adapter (both explicitly judged not-yet-justified, `docs/design/multi-llm.md` §1/§8)
 - Event engine
 - The local `origin` git remote still points at the pre-rename URL (`git@github.com:A3lxq/AI_BRAIN.git`) — it works today via GitHub's rename redirect, but updating it (`git remote set-url origin git@github.com:A3lxq/ATHENA_AI_BRAIN.git`) requires a git-config change this environment's tooling won't make on the user's behalf; the user should run it themselves

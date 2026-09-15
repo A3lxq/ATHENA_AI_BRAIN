@@ -20,6 +20,7 @@ from athena.mcp_server import (
     _runtime,
     git_tools,
     job_tools,
+    llm_tools,
     mutation_tools,
     read_tools,
     research_tools,
@@ -49,6 +50,7 @@ def build_server() -> MCPServer:
     mutation_tools.register(mcp)
     research_tools.register(mcp)
     git_tools.register(mcp)
+    llm_tools.register(mcp)
     return mcp
 
 

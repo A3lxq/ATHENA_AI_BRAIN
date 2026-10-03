@@ -100,12 +100,16 @@ async def reindex_start(note_id: int | None = None) -> str:
 
         correlation_id = str(uuid4())
         result = athena.worker.reindex_task(note_id, correlation_id)
-        job_id = await research_jobs_repo.insert(
-            conn,
-            huey_task_id=result.id,
-            job_type="reindex_start",
-            created_at=_now(),
-        )
+        try:
+            job_id = await research_jobs_repo.reserve_dispatch_slot(
+                conn,
+                job_type="reindex_start",
+                max_per_day=_runtime.config.reindex_max_dispatches_per_day,
+                huey_task_id=result.id,
+                created_at=_now(),
+            )
+        except research_jobs_repo.DispatchLimitError as exc:
+            return str(exc)
     return f"job dispatched: job_id={job_id}"
 
 

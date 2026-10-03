@@ -40,15 +40,27 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
-      - name: Install project (with dev extras)
-        run: pip install -e ".[dev]"
+      # Installs from uv.lock's exact-pinned, hashed resolution of the full
+      # dependency tree -- not a live `pip install -e ".[dev]"` resolving
+      # against pyproject.toml's lower-bound-only `>=` specifiers on every
+      # run, which would silently pull in a newly-published version of any
+      # dependency (including a malicious one) the moment it's published.
+      # See docs/SECURITY_MODEL.md's "Dependency / Supply-Chain Security"
+      # section for the exact risk this closes.
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.18"
+
+      - name: Install project from uv.lock (frozen, with dev extras)
+        run: uv sync --frozen --extra dev
 
       - name: Wait for Qdrant to be ready
         run: |
@@ -63,10 +75,10 @@ jobs:
           exit 1
 
       - name: Lint (ruff)
-        run: ruff check src tests
+        run: uv run ruff check src tests
 
       - name: Type check (mypy)
-        run: mypy src
+        run: uv run mypy src
 
       - name: Test (pytest)
-        run: pytest -q
+        run: uv run pytest -q

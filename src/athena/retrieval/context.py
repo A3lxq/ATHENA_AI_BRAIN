@@ -56,7 +56,17 @@ async def build_context(
         if note is None:
             continue
 
-        text_parts.append(f"[Source: {note.path}]\n{chunk.chunk_text}\n\n")
+        # The citation label is trusted metadata this codebase produced;
+        # the chunk text itself is untrusted retrieved vault content and is
+        # wrapped in a structurally distinct delimiter so a calling LLM has
+        # a per-call, adjacent-to-the-data signal (not just the one-time
+        # `vault_search` tool description) that this span is data to read
+        # or quote, never an instruction to follow (docs/SECURITY_MODEL.md
+        # TB-2 remediation #4).
+        text_parts.append(
+            f"[Source: {note.path}]\n"
+            f"<untrusted_vault_content>\n{chunk.chunk_text}\n</untrusted_vault_content>\n\n"
+        )
         total_tokens += token_count
         if chunk.note_id not in seen_note_ids:
             seen_note_ids.add(chunk.note_id)

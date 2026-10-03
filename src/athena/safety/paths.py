@@ -9,6 +9,7 @@ performs no business/authorization logic (see the design's §1 scope note).
 from __future__ import annotations
 
 import os
+import stat as stat_module
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -41,11 +42,20 @@ class PathEscapesVaultError(VaultPathError):
 
 
 class SymlinkNotAllowedError(VaultPathError):
-    """Raised when a symlink is encountered anywhere along a candidate path.
+    """Raised when a symlink is encountered anywhere along a candidate path,
+    OR when the final resolved target is a hardlinked file (`st_nlink > 1`).
+
+    A hardlink is not structurally a symlink -- it is a second directory
+    entry pointing at the same inode -- but it produces the identical "two
+    distinct vault-relative paths, one underlying target" aliasing problem
+    the symlink check exists to prevent (design §5), so it is raised under
+    this same exception type rather than a new one; the exception message
+    always states which mechanism (symlink vs. hardlink) triggered it so a
+    caller is never confused about which was encountered.
 
     Distinct from `PathEscapesVaultError` so logs/tests can distinguish
     "an attacker is trying to climb out" from "someone placed an in-vault
-    symlink we refuse to follow" (design §5).
+    symlink/hardlink we refuse to follow" (design §5).
     """
 
 
@@ -55,8 +65,9 @@ class PathNotFoundError(VaultPathError):
 
 
 class InvalidPathError(VaultPathError):
-    """Raised for structurally invalid input: embedded NUL, empty string, or
-    a path equal to the vault root itself."""
+    """Raised for structurally invalid input: embedded NUL or other control
+    character (0x00-0x1F), empty string, or a path equal to the vault root
+    itself."""
 
 
 @dataclass(frozen=True)
@@ -211,6 +222,56 @@ def _reject_if_root(path: Path, vault_root: VaultRoot) -> None:
         raise InvalidPathError("path resolves to the vault root itself")
 
 
+def _check_no_hardlink(candidate: Path) -> None:
+    """Reject `candidate` if it is a hardlinked file (`st_nlink > 1`).
+
+    A hardlink is a second directory entry pointing at the SAME inode as
+    some other path -- structurally not a symlink at all, so
+    `_check_no_symlinks_in_chain`'s `is_symlink()` walk never sees it. It
+    nonetheless produces the identical "two distinct vault-relative paths
+    resolving to the same underlying content" aliasing problem the symlink
+    check exists to prevent (design §5's dedup/provenance-integrity
+    rationale applies just as much to a hardlink as to a symlink).
+
+    Only meaningful for the FINAL resolved candidate, never every ancestor
+    directory component the way the symlink chain check works -- hardlink
+    aliasing is a property of the leaf file itself (only regular files can
+    be hardlinked; directories cannot on Linux), not of intermediate path
+    components. Only applies when the target already exists: a
+    not-yet-existing CREATE-mode remainder has nothing to `stat()`, and
+    callers of this function only invoke it once a target is known to
+    exist (see `resolve_vault_path`/`_resolve_create_mode`).
+
+    Deliberately skips directories: the kernel refuses `link(2)` on a
+    directory (they can never be hardlinked on Linux in the first place),
+    and an ordinary directory's `st_nlink` is >1 by construction --- it
+    counts its own `.` self-entry plus one `..` entry per subdirectory ---
+    which is unrelated to the file-aliasing problem this check exists to
+    catch. Naively applying the `st_nlink > 1` test to a directory would
+    false-positive on nearly every real directory in the vault.
+    """
+    try:
+        st = candidate.stat()
+    except OSError:
+        # Nonexistent or inaccessible target -- cannot vouch for it here
+        # either way, same defensive posture as `_check_no_symlinks_in_
+        # chain`'s own `except OSError` above: this module's other checks
+        # (PathNotFoundError for mode=EXISTING, the CREATE-mode ancestor
+        # logic) independently and correctly handle a genuinely absent or
+        # inaccessible target, so silently returning here is safe, not a
+        # bypass.
+        return
+    if stat_module.S_ISDIR(st.st_mode):
+        return
+    if st.st_nlink > 1:
+        raise SymlinkNotAllowedError(
+            f"hardlinked file encountered (not a symlink, but st_nlink="
+            f"{st.st_nlink} > 1 -- a second directory entry points at this "
+            f"same underlying file, the same aliasing problem the "
+            f"symlink-rejection policy exists to prevent): {candidate}"
+        )
+
+
 def _ensure_ancestor(resolved: Path, vault_root: VaultRoot) -> None:
     _reject_if_root(resolved, vault_root)
     if vault_root.path not in resolved.parents:
@@ -224,8 +285,15 @@ def _validate_raw_path(raw_path: str | os.PathLike[str]) -> str:
         raise InvalidPathError(f"path is not a valid path-like object: {raw_path!r}") from exc
     if raw_str == "":
         raise InvalidPathError("path must not be empty")
-    if "\x00" in raw_str:
-        raise InvalidPathError("path must not contain an embedded NUL byte")
+    if any("\x00" <= ch <= "\x1f" for ch in raw_str):
+        raise InvalidPathError(
+            "path must not contain an embedded NUL byte or other control "
+            "character (0x00-0x1F, including newline/carriage return) -- "
+            "such characters can never be a legitimate part of a vault-"
+            "relative filename and have been used to forge fake log/commit "
+            "entries in downstream consumers that free-text scan output "
+            "built from this value"
+        )
     return raw_str
 
 
@@ -293,7 +361,13 @@ def _resolve_create_mode(candidate: Path, vault_root: VaultRoot) -> SafeVaultPat
     if remainder_parts:
         final_path = resolved_ancestor.joinpath(*remainder_parts)
     else:
+        # The whole target already exists (see this function's own
+        # docstring / resolve_vault_path's docstring for why CREATE mode
+        # doesn't raise for this case) -- it is a real, stat-able file, so
+        # the hardlink check applies here too, same as the EXISTING/
+        # MAYBE_EXISTING branches in resolve_vault_path.
         final_path = resolved_ancestor
+        _check_no_hardlink(final_path)
     return _make_safe_vault_path(final_path, vault_root)
 
 
@@ -305,10 +379,12 @@ def resolve_vault_path(
     """Validate `raw_path` against `vault_root` under the given `mode`.
 
     Raises:
-      InvalidPathError       — embedded NUL, empty string, or path equal to
-                                vault_root itself.
+      InvalidPathError       — embedded NUL/other control character, empty
+                                string, or path equal to vault_root itself.
       SymlinkNotAllowedError — a symlink was encountered anywhere along the
-                                path, whether it escapes the vault or not.
+                                path (whether it escapes the vault or not),
+                                or the final resolved target is a
+                                hardlinked file (`st_nlink > 1`).
       PathEscapesVaultError  — resolved path is not a descendant of
                                 vault_root (covers `../` traversal and
                                 absolute-path escapes; symlink-caused
@@ -342,6 +418,7 @@ def resolve_vault_path(
             # it is treated as "not found" rather than crashing the caller.
             raise PathNotFoundError(f"path does not exist: {raw_str}") from exc
         _ensure_ancestor(resolved, vault_root)
+        _check_no_hardlink(resolved)
         return _make_safe_vault_path(resolved, vault_root)
 
     if mode is PathMode.CREATE:
@@ -353,6 +430,7 @@ def resolve_vault_path(
         except OSError:
             return _resolve_create_mode(candidate, vault_root)
         _ensure_ancestor(resolved, vault_root)
+        _check_no_hardlink(resolved)
         return _make_safe_vault_path(resolved, vault_root)
 
     raise AssertionError(f"unhandled PathMode: {mode!r}")  # pragma: no cover

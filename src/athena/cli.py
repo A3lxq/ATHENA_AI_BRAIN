@@ -269,17 +269,22 @@ def _cmd_research_start(args: argparse.Namespace) -> int:
     correlation_id = str(uuid4())
     result = athena.worker.research_task(args.url, args.topic, correlation_id)
 
-    async def _insert() -> int:
+    async def _reserve() -> int:
         async with open_connection(config.db_path) as conn:
-            return await research_jobs_repo.insert(
+            return await research_jobs_repo.reserve_dispatch_slot(
                 conn,
-                huey_task_id=result.id,
                 job_type="research_start",
+                max_per_day=config.research_max_dispatches_per_day,
+                huey_task_id=result.id,
                 query=args.topic,
                 created_at=datetime.now(UTC).isoformat(),
             )
 
-    job_id = asyncio.run(_insert())
+    try:
+        job_id = asyncio.run(_reserve())
+    except research_jobs_repo.DispatchLimitError as exc:
+        print(f"[FAIL] {exc}")
+        return 1
     print(f"job dispatched: job_id={job_id}")
     return 0
 

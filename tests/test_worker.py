@@ -283,7 +283,9 @@ def test_research_task_call_local_records_a_draft_and_marks_the_job_succeeded(
 
     job_id = asyncio.run(_insert())
 
-    def fake_run_research(urls: list[str], topic: str) -> ResearchDraft:
+    def fake_run_research(
+        urls: list[str], topic: str, *, db_path: Path | None = None
+    ) -> ResearchDraft:
         return ResearchDraft(
             title=topic, body="drafted body", succeeded_urls=urls, failed_urls=[]
         )
@@ -303,6 +305,58 @@ def test_research_task_call_local_records_a_draft_and_marks_the_job_succeeded(
             assert row.status == "succeeded"
 
     asyncio.run(_check())
+
+
+def test_research_task_call_local_records_an_ssrf_refused_event_for_real(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for a real gap found during a security audit:
+    `run_research`'s `security.ssrf_refused` audit event (closing an
+    A09/Repudiation gap -- refused attacks used to leave zero audit trail)
+    is opt-in via a `db_path` parameter, since `run_research` is a
+    synchronous function with no `conn`/event loop of its own. The actual
+    Huey-dispatched path (this function, `research_task`) must pass that
+    parameter through for the event to ever actually land in production --
+    confirmed here via the real `call_local` dispatch path (not just a
+    direct `run_research(..., db_path=...)` call), against a real
+    SSRF-refused URL (the cloud-metadata address this project's other
+    tests already use for the same purpose), checking the real `events`
+    table directly.
+    """
+    from types import SimpleNamespace
+
+    from athena.db.connection import open_connection
+    from athena.db.repository import research_jobs as research_jobs_repo
+
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    worker = _fresh_worker_module(tmp_path, monkeypatch, vault_dir=vault_dir)
+
+    async def _insert() -> int:
+        async with open_connection(worker._config.db_path) as conn:
+            return await research_jobs_repo.insert(
+                conn, huey_task_id="fake-huey-id-ssrf", job_type="research_start",
+                query="Topic", created_at="2026-09-10T00:00:00+00:00",
+            )
+
+    asyncio.run(_insert())
+
+    worker.research_task.call_local(
+        ["http://169.254.169.254/latest/meta-data/"],
+        "Topic",
+        "corr-ssrf",
+        task=SimpleNamespace(id="fake-huey-id-ssrf"),
+    )
+
+    async def _check() -> list[str]:
+        async with open_connection(worker._config.db_path) as conn:
+            cursor = await conn.execute(
+                "SELECT event_type FROM events WHERE event_type = 'security.ssrf_refused'"
+            )
+            return [row[0] for row in await cursor.fetchall()]
+
+    event_types = asyncio.run(_check())
+    assert event_types == ["security.ssrf_refused"]
 
 
 def test_research_task_call_local_raises_if_its_job_row_does_not_exist_yet(

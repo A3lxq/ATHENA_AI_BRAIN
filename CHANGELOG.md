@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## [1.1.0] - 2026-10-03
+
+An authorized penetration-test audit against OWASP Top 10:2025 and OWASP
+Top 10 for LLM Applications 2025, with every confirmed gap fixed and
+regression-tested. See `docs/sessions/2026-10-03_owasp-security-audit-and-fixes.md`
+for the full audit methodology and findings.
+
+### Fixed
+- **Critical**: the Phase 10 daily dispatch ceiling (`research_start`/`reindex_start`) was completely bypassable via a CWE-367 check-then-act race condition — fixed with an atomic `BEGIN IMMEDIATE` transaction (`research_jobs_repo.reserve_dispatch_slot`), verified across 10 independent concurrency trials to never exceed the configured ceiling.
+- **High**: the reconciliation safety net (`athena.vault.bootstrap.iter_markdown_files`) crashed on the same Python-3.12-vs-3.13+ `is_symlink()`/`PermissionError` behavior difference the v1.0.0 release fixed at a different call site.
+- **High**: an invalid-UTF-8 note aborted the entire ingest/reconcile batch and left the job permanently stuck at `status='running'`.
+- **High**: all four LLM provider adapters (`athena.llm.provider`) leaked an unwrapped `AttributeError` for a malformed SDK response, since response parsing sat outside each provider's own error-handling block.
+- **Medium**: refused/blocked security-relevant attempts (path traversal, SSRF, a secret-scan block, an MRTR decline) produced zero audit-log entries — Phase 10's audit-event work only covered successful mutations. Four new `security.*` event types close this, including wiring the real Huey-dispatched research path to actually emit the SSRF-refusal event, not just direct test calls.
+- **Medium**: `note_summarize` returned the raw LLM provider SDK error string verbatim, including masked API-key fragments, to the calling MCP client.
+- **Medium**: fresh-install `athena.db`/`huey.db` were created at mode `0644`, not the documented `0600`, under a normal umask — the hardening call now runs at the point of first creation, not only retroactively inside `athena doctor`.
+- **Medium**: `athena.intelligence.duplicates` read a DB-sourced note path without re-resolving it through the vault safety boundary, unlike every sibling call site.
+- **Medium**: hardlinks bypassed the vault's symlink-rejection check entirely, allowing silent cross-note content corruption with no confirmation gate.
+- **Medium**: `note_duplicates` was annotated `read_only_hint=True` while actually persisting database writes.
+- **Medium**: `vault_search`/`research_commit` lacked the prompt-injection framing their sibling tools already carry; FTS5 keyword search had no query-length cap, a real measured CPU-amplification DoS vector.
+- Several Low-severity robustness/consistency fixes: `note_related`/`note_read` now handle their own expected exceptions; note paths with embedded control characters are now rejected (closing a contained git-log-forgery vector); CI's GitHub Actions are now pinned to exact commit SHAs rather than floating tags.
+
+### Added
+- `uv.lock`, pinning the full resolved dependency tree (160 packages); CI now installs via `uv sync --frozen --extra dev` instead of a live, unpinned `pip install -e`.
+- `docs/adr/0012-mcp-transport-stdio-only.md`, formally stating stdio-only MCP transport (closing a pure governance gap `SECURITY_MODEL.md` TB-1 had flagged since Phase 0 — the code itself was always correct).
+- `tests/security/pentest/`, a new adversarial regression suite from an authorized OWASP Top 10:2025 / OWASP Top 10 for LLM Applications 2025 penetration-test audit, covering all 10 general categories and 6 of 10 LLM-specific categories (LLM04/LLM07 excluded as structurally inapplicable).
+
 ## [1.0.0] - 2026-09-15
 
 A stable, documented, tested AI Knowledge Operating System — the full arc

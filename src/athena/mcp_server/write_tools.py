@@ -107,6 +107,16 @@ async def note_create(path: str, content: str, title: str | None = None) -> str:
         )
     except FileExistsError:
         return f"note already exists at {path!r}; not overwritten"
+    except PermissionError:
+        return f"cannot create vault note at {path!r}: vault directory is not writable"
+    except OSError as exc:
+        # Any other fallible-but-expected condition the module docstring
+        # names (disk full, a symlink `O_NOFOLLOW` refused, ...) -- reported
+        # the same clean-refusal way rather than left to crash-wrap.
+        # `FileExistsError`/`PermissionError` above are both `OSError`
+        # subclasses and are matched first, so this is deliberately the
+        # catch-all fallback, not a duplicate of either.
+        return f"cannot create vault note at {path!r}: {exc}"
 
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(content)
@@ -197,6 +207,13 @@ async def note_move(path: str, new_path: str) -> str:
                 f"destination already exists at {new_path!r}; move not performed "
                 "(confirmation required to overwrite, not available in this tool)"
             )
+        except PermissionError:
+            return f"cannot move vault note to {new_path!r}: vault directory is not writable"
+        except OSError as exc:
+            # Same catch-all fallback reasoning as `note_create`'s `os.open`
+            # call above -- `FileExistsError`/`PermissionError` are both
+            # `OSError` subclasses and are matched first.
+            return f"cannot move vault note to {new_path!r}: {exc}"
         safe_path_old.path.unlink()
 
         new_vault_relative_path = safe_path_new.path.relative_to(vault_root.path).as_posix()

@@ -32,6 +32,7 @@ from athena.db.repository import notes as notes_repo
 from athena.db.repository.duplicates import DuplicateCandidateRow
 from athena.db.repository.notes import NoteRow
 from athena.retrieval.vector_search import find_similar_by_point_id
+from athena.safety.paths import PathMode, VaultPathError, VaultRoot, resolve_vault_path
 
 __all__ = ["DuplicateCandidate", "scan_for_duplicates"]
 
@@ -139,18 +140,27 @@ async def _record_lexical_matches(
     conn: aiosqlite.Connection,
     scanned_notes: list[NoteRow],
     notes_by_id: dict[int, NoteRow],
-    vault_root: Path,
+    vault_root: VaultRoot,
     pairs: dict[tuple[int, int], _PairSignals],
 ) -> None:
     """Signal 2: build + persist a MinHash signature for each scanned note,
     rebuild `MinHashLSH` from *every* persisted signature (not just this
     run's), and query each scanned note's signature against the full index.
+
+    `note.path` is DB-sourced, not caller-controlled, but must still be
+    re-resolved through `resolve_vault_path(..., PathMode.EXISTING)` before
+    being read -- the same second-layer defense every sibling call site
+    that touches a `notes.path` value uses (`note_update`/`note_delete`/
+    `note_move` in `mutation_tools.py`/`write_tools.py`,
+    `athena.intelligence.merge.merge_notes`), so a tampered or legacy DB row
+    containing a traversal path can never be read straight off disk here.
     """
     now = _now()
     for note in scanned_notes:
         try:
-            text = (vault_root / note.path).read_text(encoding="utf-8")
-        except OSError:
+            safe_path = resolve_vault_path(note.path, vault_root, PathMode.EXISTING)
+            text = safe_path.path.read_text(encoding="utf-8")
+        except (VaultPathError, OSError):
             logger.warning(
                 "could not read vault file for note_id=%s path=%s -- skipping "
                 "lexical duplicate signal for this note",
@@ -286,7 +296,7 @@ def _annotate_metadata_matches(
 async def scan_for_duplicates(
     conn: aiosqlite.Connection,
     qdrant_client: QdrantClient,
-    vault_root: Path,
+    vault_root: VaultRoot,
     *,
     note_ids: list[int] | None = None,
     threshold: float = 0.5,
@@ -298,6 +308,11 @@ async def scan_for_duplicates(
     omitted). `note_ids` narrows which notes are scanned *from*; the
     comparison pool is always every active note, since a duplicate of a
     scanned note might not itself be in `note_ids`.
+
+    `vault_root` is a `VaultRoot`, not a plain `Path` -- design §3.3's
+    type-level friction control -- so every filesystem read this function
+    (transitively, via `_record_lexical_matches`) performs is forced through
+    `resolve_vault_path` rather than a raw path join.
     """
     all_notes = await notes_repo.list_active(conn)
     notes_by_id = {note.id: note for note in all_notes}

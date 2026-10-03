@@ -12,6 +12,7 @@ from athena.indexing.chunking import Chunk
 from athena.indexing.embedding import SparseVector
 from athena.indexing.qdrant_store import upsert_chunks
 from athena.intelligence.duplicates import scan_for_duplicates
+from athena.safety.paths import VaultRoot
 
 
 def _write(vault_dir: Path, relative: str, text: str) -> Path:
@@ -64,14 +65,14 @@ async def _give_note_a_chunk(
 
 
 async def test_exact_content_hash_match_is_flagged_with_combined_score_one(
-    conn: aiosqlite.Connection, vault_dir: Path, qdrant_client: QdrantClient
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot, qdrant_client: QdrantClient
 ) -> None:
     _write(vault_dir, "a.md", "identical body text")
     _write(vault_dir, "b.md", "identical body text")
     note_a = await _make_note(conn, "a.md", content_hash="same-hash")
     note_b = await _make_note(conn, "b.md", content_hash="same-hash")
 
-    candidates = await scan_for_duplicates(conn, qdrant_client, vault_dir)
+    candidates = await scan_for_duplicates(conn, qdrant_client, vault_root)
 
     matches = [c for c in candidates if {c.note_a_id, c.note_b_id} == {note_a, note_b}]
     assert len(matches) == 1
@@ -83,7 +84,7 @@ async def test_exact_content_hash_match_is_flagged_with_combined_score_one(
 
 
 async def test_lexical_near_duplicate_is_flagged_unrelated_notes_are_not(
-    conn: aiosqlite.Connection, vault_dir: Path, qdrant_client: QdrantClient
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot, qdrant_client: QdrantClient
 ) -> None:
     shared_text = " ".join(f"word{i}" for i in range(200))
     near_dup_text = shared_text.replace("word5", "wordFIVE")
@@ -96,7 +97,7 @@ async def test_lexical_near_duplicate_is_flagged_unrelated_notes_are_not(
     note_b = await _make_note(conn, "b.md", content_hash="hash-b")
     note_c = await _make_note(conn, "c.md", content_hash="hash-c")
 
-    candidates = await scan_for_duplicates(conn, qdrant_client, vault_dir, threshold=0.3)
+    candidates = await scan_for_duplicates(conn, qdrant_client, vault_root, threshold=0.3)
 
     pairs = {frozenset({c.note_a_id, c.note_b_id}) for c in candidates}
     assert frozenset({note_a, note_b}) in pairs
@@ -105,13 +106,13 @@ async def test_lexical_near_duplicate_is_flagged_unrelated_notes_are_not(
 
 
 async def test_minhash_signature_persists_and_reloads_across_scans(
-    conn: aiosqlite.Connection, vault_dir: Path, qdrant_client: QdrantClient
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot, qdrant_client: QdrantClient
 ) -> None:
     text = " ".join(f"token{i}" for i in range(50))
     _write(vault_dir, "a.md", text)
     note_a = await _make_note(conn, "a.md", content_hash="hash-a")
 
-    await scan_for_duplicates(conn, qdrant_client, vault_dir)
+    await scan_for_duplicates(conn, qdrant_client, vault_root)
 
     signatures = await duplicates_repo.list_all_signatures(conn)
     assert len(signatures) == 1
@@ -120,7 +121,7 @@ async def test_minhash_signature_persists_and_reloads_across_scans(
 
 
 async def test_note_with_no_chunks_only_skips_the_semantic_signal(
-    conn: aiosqlite.Connection, vault_dir: Path, qdrant_client: QdrantClient
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot, qdrant_client: QdrantClient
 ) -> None:
     shared_text = " ".join(f"alpha{i}" for i in range(200))
     _write(vault_dir, "a.md", shared_text)
@@ -130,7 +131,7 @@ async def test_note_with_no_chunks_only_skips_the_semantic_signal(
     # Neither note has any chunks -- the semantic signal has nothing to work
     # with, but the lexical/exact/metadata signals still run.
 
-    candidates = await scan_for_duplicates(conn, qdrant_client, vault_dir)
+    candidates = await scan_for_duplicates(conn, qdrant_client, vault_root)
 
     matches = [c for c in candidates if {c.note_a_id, c.note_b_id} == {note_a, note_b}]
     assert len(matches) == 1
@@ -139,7 +140,7 @@ async def test_note_with_no_chunks_only_skips_the_semantic_signal(
 
 
 async def test_semantic_signal_fires_when_notes_have_chunks(
-    conn: aiosqlite.Connection, vault_dir: Path, qdrant_client: QdrantClient
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot, qdrant_client: QdrantClient
 ) -> None:
     _write(vault_dir, "a.md", "note a body")
     _write(vault_dir, "b.md", "note b body, unrelated text entirely")
@@ -150,7 +151,7 @@ async def test_semantic_signal_fires_when_notes_have_chunks(
     await _give_note_a_chunk(conn, qdrant_client, note_a, "note a body")
     await _give_note_a_chunk(conn, qdrant_client, note_b, "note b body unrelated text entirely")
 
-    candidates = await scan_for_duplicates(conn, qdrant_client, vault_dir)
+    candidates = await scan_for_duplicates(conn, qdrant_client, vault_root)
 
     matches = [c for c in candidates if {c.note_a_id, c.note_b_id} == {note_a, note_b}]
     assert len(matches) == 1
@@ -159,7 +160,7 @@ async def test_semantic_signal_fires_when_notes_have_chunks(
 
 
 async def test_qdrant_unreachable_degrades_to_three_signals(
-    conn: aiosqlite.Connection, vault_dir: Path
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot
 ) -> None:
     _write(vault_dir, "a.md", "identical body text")
     _write(vault_dir, "b.md", "identical body text")
@@ -167,7 +168,7 @@ async def test_qdrant_unreachable_degrades_to_three_signals(
     note_b = await _make_note(conn, "b.md", content_hash="same-hash")
     unreachable_qdrant = QdrantClient(url="http://127.0.0.1:1")
 
-    candidates = await scan_for_duplicates(conn, unreachable_qdrant, vault_dir)
+    candidates = await scan_for_duplicates(conn, unreachable_qdrant, vault_root)
 
     matches = [c for c in candidates if {c.note_a_id, c.note_b_id} == {note_a, note_b}]
     assert len(matches) == 1
@@ -176,47 +177,47 @@ async def test_qdrant_unreachable_degrades_to_three_signals(
 
 
 async def test_pair_below_threshold_is_not_upserted(
-    conn: aiosqlite.Connection, vault_dir: Path, qdrant_client: QdrantClient
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot, qdrant_client: QdrantClient
 ) -> None:
     _write(vault_dir, "a.md", "completely different text about apples")
     _write(vault_dir, "b.md", "totally unrelated text about oranges and cars")
     await _make_note(conn, "a.md", content_hash="hash-a")
     await _make_note(conn, "b.md", content_hash="hash-b")
 
-    candidates = await scan_for_duplicates(conn, qdrant_client, vault_dir, threshold=0.5)
+    candidates = await scan_for_duplicates(conn, qdrant_client, vault_root, threshold=0.5)
 
     assert candidates == []
 
 
 async def test_note_ids_narrows_scan_source_but_not_comparison_pool(
-    conn: aiosqlite.Connection, vault_dir: Path, qdrant_client: QdrantClient
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot, qdrant_client: QdrantClient
 ) -> None:
     _write(vault_dir, "a.md", "identical body text")
     _write(vault_dir, "b.md", "identical body text")
     note_a = await _make_note(conn, "a.md", content_hash="same-hash")
     note_b = await _make_note(conn, "b.md", content_hash="same-hash")
 
-    candidates = await scan_for_duplicates(conn, qdrant_client, vault_dir, note_ids=[note_a])
+    candidates = await scan_for_duplicates(conn, qdrant_client, vault_root, note_ids=[note_a])
 
     matches = [c for c in candidates if {c.note_a_id, c.note_b_id} == {note_a, note_b}]
     assert len(matches) == 1
 
 
 async def test_rescan_does_not_overwrite_an_already_resolved_candidate(
-    conn: aiosqlite.Connection, vault_dir: Path, qdrant_client: QdrantClient
+    conn: aiosqlite.Connection, vault_dir: Path, vault_root: VaultRoot, qdrant_client: QdrantClient
 ) -> None:
     _write(vault_dir, "a.md", "identical body text")
     _write(vault_dir, "b.md", "identical body text")
     note_a = await _make_note(conn, "a.md", content_hash="same-hash")
     note_b = await _make_note(conn, "b.md", content_hash="same-hash")
 
-    first_pass = await scan_for_duplicates(conn, qdrant_client, vault_dir)
+    first_pass = await scan_for_duplicates(conn, qdrant_client, vault_root)
     match = next(c for c in first_pass if {c.note_a_id, c.note_b_id} == {note_a, note_b})
     await duplicates_repo.update_resolution(
         conn, match.id, status="rejected", resolved_at="t1", resolved_by="user"
     )
 
-    await scan_for_duplicates(conn, qdrant_client, vault_dir)
+    await scan_for_duplicates(conn, qdrant_client, vault_root)
 
     row = await duplicates_repo.get_by_id(conn, match.id)
     assert row is not None

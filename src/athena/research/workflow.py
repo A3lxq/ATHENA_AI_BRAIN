@@ -15,6 +15,8 @@ crash-safety ordering (filesystem write before any database write)
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import hashlib
 import logging
 import os
@@ -22,10 +24,12 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 from qdrant_client import QdrantClient
 
+from athena.db.connection import open_connection
 from athena.db.repository import events as events_repo
 from athena.db.repository import notes as notes_repo
 from athena.db.repository import provenance as provenance_repo
@@ -105,7 +109,48 @@ class ResearchDraft:
     failed_urls: list[str]
 
 
-def run_research(urls: list[str], topic: str) -> ResearchDraft:
+async def _write_refusal_event(
+    db_path: Path, *, event_type: str, payload: dict[str, Any]
+) -> None:
+    async with open_connection(db_path) as conn:
+        await events_repo.record_vault_event(conn, event_type=event_type, payload=payload)
+
+
+def _record_refusal_event(
+    db_path: Path | None, *, event_type: str, payload: dict[str, Any]
+) -> None:
+    """Best-effort, never-raises audit-trail write for a refusal site with
+    no async `conn` naturally in scope: `run_research` is a plain sync
+    function (the Huey task body, per this module's own docstring), so it
+    has neither an open connection nor an event loop of its own to await
+    one on. `db_path` is `None` for the real dispatched-via-Huey call path
+    (no caller currently threads one through -- see this project's own
+    file-scope constraints for this change); callers that do have one
+    (tests, and any future caller) get a real `security.ssrf_refused`
+    `events` row.
+
+    Always runs the actual async write on a dedicated worker thread with
+    its own fresh event loop AND its own fresh connection to `db_path`
+    (never the caller's own `aiosqlite.Connection`, if it has one) --
+    reusing an existing `aiosqlite.Connection` from a different event loop
+    than the one that constructed it is unsafe (aiosqlite binds a
+    connection's internal futures to that original loop). This makes the
+    write safe to call whether or not the calling thread already has a
+    running event loop of its own (e.g. when `run_research` is invoked
+    directly from an `async def` test).
+    """
+    if db_path is None:
+        return
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(
+                asyncio.run, _write_refusal_event(db_path, event_type=event_type, payload=payload)
+            ).result(timeout=5.0)
+    except Exception:
+        logger.warning("failed to record %s event", event_type, exc_info=True)
+
+
+def run_research(urls: list[str], topic: str, *, db_path: Path | None = None) -> ResearchDraft:
     """Fetch and extract each of `urls` independently, assembling one
     Markdown draft with a `## Source: {url}` heading per successfully
     extracted article. Never raises for an individual URL's failure --
@@ -114,6 +159,10 @@ def run_research(urls: list[str], topic: str) -> ResearchDraft:
     (no meaningful content -- a paywalled or JS-only page, an expected,
     common outcome per design doc §5) are all recorded as a failed URL and
     the batch continues.
+
+    An SSRF-refused URL is also recorded as a `security.ssrf_refused`
+    audit event when `db_path` is given (see `_record_refusal_event`'s own
+    docstring for why this is opt-in rather than unconditional here).
     """
     succeeded_urls: list[str] = []
     failed_urls: list[str] = []
@@ -124,6 +173,11 @@ def run_research(urls: list[str], topic: str) -> ResearchDraft:
             page = fetch_url(url)
         except FetchRefused:
             logger.warning("research URL refused by SSRF protections: %s", url)
+            _record_refusal_event(
+                db_path,
+                event_type="security.ssrf_refused",
+                payload={"tool": "research_start", "url": url, "reason": "ssrf_refused"},
+            )
             failed_urls.append(url)
             continue
         except Exception:
@@ -229,6 +283,16 @@ async def commit_draft(
         )
     elif block_on_high_confidence_secrets and _has_blocking_finding(scan_result.findings):
         safe_path.path.unlink()
+        await events_repo.record_vault_event(
+            conn,
+            event_type="security.secret_block_refused",
+            payload={
+                "tool": "research_commit",
+                "job_id": job_id,
+                "finding_count": len(scan_result.findings),
+                "reason": "high_confidence_secret_finding",
+            },
+        )
         raise ValueError(
             f"commit blocked: high-confidence secret finding in research draft for "
             f"job_id={job_id}"

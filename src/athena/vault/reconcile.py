@@ -99,15 +99,26 @@ async def reconcile_vault(
 
     async def _reconcile_one(vault_relative: str, absolute_path: str) -> None:
         nonlocal discrepancies_found, jobs_enqueued
-        result = await ingest_note(
-            conn,
-            huey,
-            vault_root,
-            absolute_path,
-            correlation_id=correlation_id,
-            block_on_high_confidence_secrets=block_on_high_confidence_secrets,
-            changed_by="reconciliation",
-        )
+        try:
+            result = await ingest_note(
+                conn,
+                huey,
+                vault_root,
+                absolute_path,
+                correlation_id=correlation_id,
+                block_on_high_confidence_secrets=block_on_high_confidence_secrets,
+                changed_by="reconciliation",
+            )
+        except Exception:
+            # One bad note (e.g. invalid UTF-8, raising past ingest_note's
+            # OSError handling) must never abort the rest of the
+            # reconciliation sweep -- same best-effort posture as the
+            # `index_note` call below, and the same philosophy already
+            # established for `run_research`'s per-URL handling.
+            logger.exception(
+                "ingestion failed for path=%s during reconciliation", vault_relative
+            )
+            return
         jobs_enqueued += 1
         discrepancy_type = _OUTCOME_TO_DISCREPANCY_TYPE.get(result.outcome)
         if discrepancy_type is not None:

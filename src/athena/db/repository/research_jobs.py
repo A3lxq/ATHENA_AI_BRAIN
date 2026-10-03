@@ -60,6 +60,31 @@ def _row_to_job(row: Any) -> ResearchJobRow:
     )
 
 
+async def _insert_without_commit(
+    conn: aiosqlite.Connection,
+    *,
+    huey_task_id: str,
+    job_type: str,
+    created_at: str,
+    query: str | None = None,
+    requested_by: str | None = None,
+) -> int:
+    """Shared INSERT logic for `insert()` and `reserve_dispatch_slot()` --
+    issues the INSERT but deliberately does not commit, so `insert()` can
+    commit standalone (its existing public contract) while
+    `reserve_dispatch_slot()` can fold the same INSERT into its own
+    surrounding `BEGIN IMMEDIATE`/`COMMIT` transaction instead."""
+    cursor = await conn.execute(
+        "INSERT INTO research_jobs (huey_task_id, job_type, query, requested_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (huey_task_id, job_type, query, requested_by, created_at),
+    )
+    job_id = cursor.lastrowid
+    if job_id is None:
+        raise RuntimeError("INSERT INTO research_jobs did not yield a rowid")
+    return job_id
+
+
 async def insert(
     conn: aiosqlite.Connection,
     *,
@@ -69,15 +94,15 @@ async def insert(
     query: str | None = None,
     requested_by: str | None = None,
 ) -> int:
-    cursor = await conn.execute(
-        "INSERT INTO research_jobs (huey_task_id, job_type, query, requested_by, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (huey_task_id, job_type, query, requested_by, created_at),
+    job_id = await _insert_without_commit(
+        conn,
+        huey_task_id=huey_task_id,
+        job_type=job_type,
+        created_at=created_at,
+        query=query,
+        requested_by=requested_by,
     )
     await conn.commit()
-    job_id = cursor.lastrowid
-    if job_id is None:
-        raise RuntimeError("INSERT INTO research_jobs did not yield a rowid")
     return job_id
 
 
@@ -221,3 +246,60 @@ async def check_daily_dispatch_limit(
         raise DispatchLimitError(
             f"daily dispatch limit ({max_per_day}) reached for job_type={job_type!r}"
         )
+
+
+async def reserve_dispatch_slot(
+    conn: aiosqlite.Connection,
+    *,
+    job_type: str,
+    max_per_day: int,
+    huey_task_id: str,
+    created_at: str,
+    query: str | None = None,
+    requested_by: str | None = None,
+) -> int:
+    """Atomic replacement for "`check_daily_dispatch_limit` then `insert`"
+    (docs/design/production-hardening.md §2.2's dispatch-ceiling mitigation)
+    -- closes the check-then-act race (CWE-367) the pair had when run as two
+    separate statements, each on its own connection: `check_daily_dispatch_
+    limit`'s `SELECT COUNT(*)` and the later `INSERT` could both read the
+    same stale count under concurrent callers, letting more than
+    `max_per_day` dispatches through (confirmed: 8 concurrent calls against
+    a ceiling of 1 let 2-8 through across repeated runs before this fix).
+
+    Issues `BEGIN IMMEDIATE` first -- unlike SQLite's default deferred
+    `BEGIN`, this takes a RESERVED write lock immediately, so a second
+    concurrent caller blocks (up to `busy_timeout`) on ITS OWN `BEGIN
+    IMMEDIATE` until the first caller's transaction commits or rolls back,
+    rather than both callers independently reading the pre-dispatch count.
+    Every reader and writer of `research_jobs` within the ceiling check must
+    go through this one write-locking entry point to actually close the
+    race; the plain `count_dispatched_today`-based `check_daily_dispatch_
+    limit` above still exists for callers that only need an advisory/
+    reporting count, not an enforced reservation.
+
+    Raises `DispatchLimitError` (after a clean `ROLLBACK`) if `job_type` is
+    already at `max_per_day`; otherwise inserts the new `research_jobs` row
+    and commits, returning its id -- the same row `insert()` would have
+    produced, just atomically reserved against the count check.
+    """
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        if await count_dispatched_today(conn, job_type=job_type) >= max_per_day:
+            raise DispatchLimitError(
+                f"daily dispatch limit ({max_per_day}) reached for job_type={job_type!r}"
+            )
+        job_id = await _insert_without_commit(
+            conn,
+            huey_task_id=huey_task_id,
+            job_type=job_type,
+            created_at=created_at,
+            query=query,
+            requested_by=requested_by,
+        )
+    except BaseException:
+        await conn.execute("ROLLBACK")
+        raise
+    else:
+        await conn.execute("COMMIT")
+        return job_id

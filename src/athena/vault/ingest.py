@@ -246,7 +246,13 @@ async def _ingest_note_locked(
 
     try:
         raw_text = safe_path.path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError is a ValueError subclass, not an OSError
+        # subclass -- a `.md` file containing invalid UTF-8 bytes must be
+        # treated as a clean per-note ingestion failure (same outcome/event
+        # shape as an OSError from the read), not allowed to propagate and
+        # abort the whole-vault callers (bootstrap/reconciliation) that loop
+        # over `ingest_note()`.
         await _append(
             conn,
             event_type="job.failed",

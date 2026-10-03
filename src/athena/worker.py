@@ -34,7 +34,7 @@ from athena.db.repository import events as events_repo
 from athena.db.repository import research_jobs as research_jobs_repo
 from athena.git.write import PushResult
 from athena.git.write import push as git_push
-from athena.hardening.permissions import ensure_private_dir
+from athena.hardening.permissions import ensure_private_dir, ensure_private_file
 from athena.hardening.serializer import SerializerMisconfigured, assert_safe_job_serializer
 from athena.indexing.index_note import IndexBootstrapSummary, index_bootstrap, index_note
 from athena.indexing.qdrant_store import ensure_collection
@@ -105,6 +105,13 @@ def build_huey(config: AthenaConfig) -> SqliteHuey:
         filename=str(config.huey_db_path),
         serializer=SignedSerializer(secret=config.huey_serializer_secret),
     )
+    # `SqliteHuey.__init__` opens (and, on a fresh install, creates) its own
+    # SQLite file at construction time via plain POSIX file creation -- same
+    # umask-masked-mode gap `athena.db.connection.open_connection` has for
+    # `athena.db`, fixed there the same way. `ensure_private_file` is
+    # idempotent, so this runs on every `build_huey` call, not just when the
+    # file is first created.
+    ensure_private_file(config.huey_db_path)
     assert_safe_job_serializer(instance)
     return instance
 
@@ -333,7 +340,7 @@ def run_duplicates_scan(
     async def _run() -> list[DuplicateCandidate]:
         async with open_connection(active_config.db_path) as conn:
             return await scan_for_duplicates(
-                conn, qdrant_client, vault_root.path, note_ids=note_ids, threshold=threshold
+                conn, qdrant_client, vault_root, note_ids=note_ids, threshold=threshold
             )
 
     return asyncio.run(_run())
@@ -488,7 +495,7 @@ def duplicates_scan_task(correlation_id: str) -> None:
         qdrant_client = _try_get_qdrant_client(_config) or QdrantClient(url=_config.qdrant_url)
         async with open_connection(_config.db_path) as conn:
             return await scan_for_duplicates(
-                conn, qdrant_client, vault_root.path, note_ids=None
+                conn, qdrant_client, vault_root, note_ids=None
             )
 
     candidates = asyncio.run(_run())
@@ -570,7 +577,7 @@ def research_task(urls: list[str], topic: str, correlation_id: str, task: object
 
     job_id = asyncio.run(_find_job_id())
 
-    draft: ResearchDraft = run_research(urls, topic)
+    draft: ResearchDraft = run_research(urls, topic, db_path=_config.db_path)
 
     async def _record() -> None:
         async with open_connection(_config.db_path) as conn:

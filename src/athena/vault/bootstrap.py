@@ -72,7 +72,21 @@ def iter_markdown_files(vault_root: VaultRoot) -> Iterator[Path]:
             if not filename.endswith(".md"):
                 continue
             candidate = Path(dirpath) / filename
-            if not candidate.is_symlink():
+            try:
+                is_symlink = candidate.is_symlink()
+            except OSError:
+                # An inaccessible ancestor directory can make `is_symlink()`
+                # raise instead of returning a boolean -- see
+                # `athena.safety.paths._check_no_symlinks_in_chain`'s
+                # docstring for the full Python 3.12-vs-3.13+ behavior
+                # difference this guards against (fixed there in commit
+                # 99d6aa1). This is the whole-vault walk's own instance of
+                # the same call, backing both `athena ingest bootstrap` and
+                # the reconciliation safety net -- it must degrade by
+                # skipping this one entry, not by crashing the entire walk
+                # it's supposed to make resilient.
+                continue
+            if not is_symlink:
                 yield candidate
 
 
@@ -100,15 +114,26 @@ async def bootstrap_ingest_vault(
     outcome_counts: dict[str, int] = {}
     notes_failed = 0
     for path in iter_markdown_files(vault_root):
-        result = await ingest_note(
-            conn,
-            huey,
-            vault_root,
-            str(path),
-            correlation_id=correlation_id,
-            block_on_high_confidence_secrets=block_on_high_confidence_secrets,
-            changed_by="bootstrap",
-        )
+        try:
+            result = await ingest_note(
+                conn,
+                huey,
+                vault_root,
+                str(path),
+                correlation_id=correlation_id,
+                block_on_high_confidence_secrets=block_on_high_confidence_secrets,
+                changed_by="bootstrap",
+            )
+        except Exception:
+            # One bad note (e.g. one this project's own security-audit
+            # found can raise UnicodeDecodeError past ingest_note's OSError
+            # handling) must never abort the whole bootstrap run -- same
+            # best-effort posture as the `index_note` call just below, and
+            # the same philosophy already established for `run_research`'s
+            # per-URL handling.
+            logger.exception("ingestion failed for path=%s during bootstrap", path)
+            notes_failed += 1
+            continue
         outcome_counts[result.outcome] = outcome_counts.get(result.outcome, 0) + 1
         if result.outcome == "scan_error":
             notes_failed += 1

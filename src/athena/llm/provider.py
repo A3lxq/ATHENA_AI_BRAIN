@@ -75,11 +75,11 @@ class OpenAIProvider:
                 ),
                 timeout_s=timeout_s,
             )
+            return str(response.output_text)
         except LLMTimeoutError:
             raise
         except Exception as exc:
             raise LLMProviderError(f"OpenAI call failed: {exc}") from exc
-        return str(response.output_text)
 
 
 class AnthropicProvider:
@@ -98,15 +98,16 @@ class AnthropicProvider:
                 ),
                 timeout_s=timeout_s,
             )
+            for block in message.content:
+                if hasattr(block, "text"):
+                    return str(block.text)
+            raise LLMProviderError("Anthropic response contained no text block")
         except LLMTimeoutError:
+            raise
+        except LLMProviderError:
             raise
         except Exception as exc:
             raise LLMProviderError(f"Anthropic call failed: {exc}") from exc
-
-        for block in message.content:
-            if hasattr(block, "text"):
-                return str(block.text)
-        raise LLMProviderError("Anthropic response contained no text block")
 
 
 class GoogleProvider:
@@ -126,14 +127,16 @@ class GoogleProvider:
                 ),
                 timeout_s=timeout_s,
             )
+            text = response.text
+            if text is None:
+                raise LLMProviderError("Google response contained no text")
+            return str(text)
         except LLMTimeoutError:
+            raise
+        except LLMProviderError:
             raise
         except Exception as exc:
             raise LLMProviderError(f"Google call failed: {exc}") from exc
-        text = response.text
-        if text is None:
-            raise LLMProviderError("Google response contained no text")
-        return str(text)
 
 
 class OllamaProvider:
@@ -157,8 +160,8 @@ class OllamaProvider:
                 ),
                 timeout_s=timeout_s,
             )
+            return str(response.message.content)
         except LLMTimeoutError:
             raise
         except Exception as exc:
             raise LLMProviderError(f"Ollama call failed: {exc}") from exc
-        return str(response.message.content)

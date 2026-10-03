@@ -182,7 +182,11 @@ async def note_delete(path: str, ctx: Context) -> str:
     (`deleted_at`, kept for provenance/history continuity per CLAUDE.md
     rule 24 -- Git history still gives content-level recovery). Rejected
     outright if declined, cancelled, or the confirmation doesn't match --
-    the wrapped delete never runs on anything but an exact-match accept.
+    the wrapped delete never runs on anything but an exact-match accept. A
+    declined/cancelled/mismatched confirmation is itself recorded as a
+    `security.mrtr_declined` audit event (docs/design/production-
+    hardening.md §2.1's `record_vault_event` convention, extended here to
+    refused/blocked attempts, not just successful mutations).
     """
     vault_root = _runtime.require_vault_root()
     async with open_connection(_runtime.config.db_path) as conn:
@@ -195,6 +199,11 @@ async def note_delete(path: str, ctx: Context) -> str:
             schema=ConfirmDeleteNote,
         )
         if result.action != "accept" or result.data.confirm_path != path:
+            await events_repo.record_vault_event(
+                conn,
+                event_type="security.mrtr_declined",
+                payload={"tool": "note_delete", "note_id": note.id, "path": path},
+            )
             return "deletion not confirmed -- no changes made"
 
         try:

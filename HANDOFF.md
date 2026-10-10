@@ -33,12 +33,12 @@ the source of truth.
   refused attacks), `athena bench`.
 
 ### Release state
-- Latest release: **v1.1.0** (tag on commit `1fe6b06`).
+- Latest release: **v1.1.1** (carries the new license; v1.1.0 is the previous release).
 - **v1.0.0** was relabeled "v1.0.0 (Beta)" and marked a prerelease (the git
   tag itself is untouched).
-- `main` has later commits: `5a134d5` (license change) and the commit that
-  adds this file. Neither is tagged. A v1.1.1 patch release carrying the
-  new license was offered but not requested.
+- v1.1.1 (2026-10-10) is the first release under the new personal-use,
+  no-modification license. v1.0.0 and v1.1.0 were published under the
+  older contribute-back-or-keep-private terms.
 - Tests: 809 passed, 2 expected failures (xfail). ruff and mypy clean.
 - CI: GitHub Actions on ubuntu-latest, Python 3.12, installs from `uv.lock`.
 
@@ -107,9 +107,8 @@ Before doing anything, read in this order:
 3. CURRENT_STATE.md and NEXT_SESSION.md
 4. docs/SECURITY_MODEL.md and docs/sessions/2026-10-03_owasp-security-audit-and-fixes.md
 
-Current state: latest release is v1.1.0, v1.0.0 is relabeled a beta
-prerelease, main is ahead with a license change (personal use only, no
-modifications) and HANDOFF.md. 809 tests pass, 2 expected xfails, ruff and
+Current state: latest release is v1.1.1 (personal use only, no
+modifications license), v1.0.0 is relabeled a beta prerelease. 809 tests pass, 2 expected xfails, ruff and
 mypy clean.
 
 Rules:
@@ -124,7 +123,6 @@ Rules:
 
 First message back to me: confirm what you read, report the verified test
 status, and list the open items from HANDOFF.md so I can choose what to do
-next. My options include: a v1.1.1 release carrying the new license, the
-reconcile_vault crash-recovery gap, adding gitleaks to CI, expanding the
+next. My options include: the reconcile_vault crash-recovery gap, adding gitleaks to CI, expanding the
 retrieval-eval set, or something new.
 ```

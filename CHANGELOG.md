@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## [1.1.1] - 2026-10-10
+
+### Changed
+- **License**: replaced the earlier contribute-back-or-keep-private terms with a stricter custom license. The software may be installed and run unmodified for personal, non-commercial use only; modification, redistribution and commercial use are not permitted. Suggestions are welcome as issues or pull requests. The license is custom and not lawyer-reviewed (stated in `LICENSE`). v1.0.0 and v1.1.0 were published under the older terms.
+
+### Added
+- `HANDOFF.md`: project summary and a copy-paste continuation prompt for starting a new chat.
+
+No code changes beyond the version bump.
+
 ## [1.1.0] - 2026-10-03
 
 An authorized penetration-test audit against OWASP Top 10:2025 and OWASP

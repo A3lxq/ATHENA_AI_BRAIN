@@ -1,6 +1,6 @@
-ATHENA AI-BRAIN Personal Use License
+ATHENA AI-BRAIN Personal Use License (No Modifications)
 
-Copyright (c) 2026 A3lxq
+Copyright (c) 2026 A3lxq. All rights reserved except as expressly granted below.
 
 This is a custom license, not a standard OSI-approved license. It is
 written in plain language to state the terms clearly; it has not been
@@ -11,47 +11,49 @@ have an attorney review or redraft them before relying on this file.
 
    Permission is granted, free of charge, to any person obtaining a copy
    of this software and associated documentation files (the "Software"),
-   to use, run, and modify the Software for personal, non-commercial
-   purposes only, subject to the conditions below.
+   to download, install, and run the Software, unmodified, for personal,
+   non-commercial purposes only, subject to the conditions below.
 
-2. No commercial use
+2. No modifications
 
-   The Software, and any modified version of it, may not be used for any
-   commercial purpose, and may not be sold, sublicensed, or offered as
-   part of a paid product or service, without prior written permission
-   from the copyright holder.
+   You may not modify, adapt, translate, reverse engineer, decompile,
+   disassemble, or create derivative works of the Software or any part of
+   it, in whole or in part, for any purpose. The Software must be used
+   exactly as distributed by the copyright holder.
 
-3. Modifications must be contributed back, or kept strictly private
+   This restriction applies to source code, configuration shipped with the
+   Software, documentation, and any other file in the distribution.
+   Setting the documented environment variables and configuration values
+   the Software itself exposes for users to set is not a modification.
 
-   If you modify the Software, you have exactly two options for what you
-   may do with that modified version:
+3. No commercial use
 
-   a. Contribute it back. Submit your changes (for example, as a pull
-      request or patch) to this project's parent repository
-      (github.com/A3lxq/ATHENA_AI_BRAIN) for consideration. You do not
-      need your contribution to be accepted for this option to apply --
-      offering it back in good faith satisfies this term.
+   The Software may not be used for any commercial purpose, and may not be
+   sold, sublicensed, rented, or offered as part of a paid product or
+   service, without prior written permission from the copyright holder.
 
-   b. Keep it strictly private. Use your modified version yourself,
-      locally, for your own personal purposes, without distributing,
-      publishing, or otherwise sharing it -- including as a public or
-      private fork, a republished copy, or a component of anything else
-      you distribute -- to any other person or system.
+4. No redistribution
 
-   What you may not do is publish, distribute, or share a modified
-   version of the Software with anyone else without first offering those
-   modifications back to the parent repository per (a). An independent
-   fork or redistribution of a modified version that has not been
-   offered back to the parent repository is not permitted under this
-   license.
+   You may not redistribute, republish, or share the Software, in whole
+   or in part, with any other person or system, whether modified or not,
+   except by pointing them to the official repository
+   (github.com/A3lxq/ATHENA_AI_BRAIN) so they can obtain their own copy
+   under these same terms.
 
-4. Preservation of this license
+5. Contributions
 
-   Any copy of the Software, modified or not, that you do distribute
-   under the terms of Section 3(a) above must include this license file
-   unmodified, along with a clear note of what you changed.
+   You are welcome to suggest changes by opening an issue or pull request
+   on the official repository. Submitting a suggestion does not grant you
+   any right to use a modified version; only changes accepted and
+   released by the copyright holder become part of the Software.
 
-5. No warranty
+6. Termination
+
+   Any breach of these terms automatically terminates your permission to
+   use the Software. On termination you must stop using it and delete all
+   copies in your possession.
+
+7. No warranty
 
    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
    EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF

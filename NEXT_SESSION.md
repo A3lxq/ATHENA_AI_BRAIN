@@ -54,7 +54,7 @@ Following the user's instruction to deploy agents as "expert hackers and pentest
 - `note_create`/`note_update` content is still not secret-scanned before being written (the original Phase 6 gap).
 - A full wire-level elicitation round-trip integration test — still not built.
 - Model routing, a real per-provider dollar-cost ceiling, multi-source synthesis — all still explicitly out of scope.
-- The licensing interpretation (contribute-back-or-keep-private) baked into `LICENSE` — still worth an explicit confirmation with the user if that hasn't happened yet.
+- Licensing: on 2026-10-10 the user replaced the earlier contribute-back-or-keep-private terms with a stricter "personal use only, no modifications of any kind, no redistribution, no commercial use" license. `LICENSE` and the README license section reflect this. The license is custom and not lawyer-reviewed (stated in the file itself).
 
 ## Windows Compatibility
 

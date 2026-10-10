@@ -80,9 +80,10 @@ implementation-phase design document:
 ## License
 
 ATHENA AI-BRAIN is distributed under a custom personal-use license: free to
-use and modify for personal, non-commercial purposes, with any distributed
-modification required to either be contributed back to this repository or
-kept strictly private. See [`LICENSE`](LICENSE) for the full terms.
+install and run, unmodified, for personal, non-commercial purposes. No
+modification, redistribution, or commercial use is permitted. Suggestions
+are welcome as issues or pull requests on this repository. See
+[`LICENSE`](LICENSE) for the full terms.
 
 ## Contributing / Development
 
